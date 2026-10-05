@@ -1,0 +1,20 @@
+[package]
+name = "agent-monitor-search"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = "3.14.1"
+napi-derive = "3.6.11"
+tantivy = { version = "0.26.2", default-features = false, features = ["mmap", "lz4-compression"] }
+
+[build-dependencies]
+napi-build = "2.6.0"
+
+[profile.release]
+lto = "thin"
+strip = true

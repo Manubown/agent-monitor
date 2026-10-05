@@ -1,0 +1,187 @@
+import path from "node:path";
+import { type Adapter, arr, homeDir, jsonLines, num, obj, shellCommand, str, stringifyInput, titleFrom, toMs } from "../core/adapter";
+import type { AgentEvent, ParsedSession, UsageRecord } from "../core/types";
+
+/**
+ * Claude Code: <config>/projects/<cwd-slug>/<sessionId>.jsonl, with subagent
+ * transcripts in <sessionId>/subagents/agent-<id>.jsonl.
+ *
+ * One API response is written as several lines (one per content block), each
+ * repeating the same `message.id` and `usage`, so usage is deduplicated by
+ * message id. The log has no cost field; cost is estimated from list prices.
+ */
+export const claudeCodeAdapter: Adapter = {
+  id: "claude-code",
+  label: "Claude Code",
+  roots: (env) => [path.join(env.CLAUDE_CONFIG_DIR || path.join(homeDir(env), ".claude"), "projects")],
+  match: (filePath) => filePath.endsWith(".jsonl"),
+  parse: parseClaudeCode,
+  resumeCommand: (s) => (s.parentNativeId ? undefined : shellCommand(s.cwd, "claude", "--resume", s.nativeId)),
+};
+
+const SUBAGENT_PATH = /[\\/]([^\\/]+)[\\/]subagents[\\/](agent-[^\\/]+)\.jsonl$/;
+
+/** User-role text that the harness injected rather than a human typed. */
+const INJECTED = /^\s*<(system-reminder|command-name|command-message|command-args|local-command-stdout|local-command-stderr|local-command-caveat|bash-input|bash-stdout|bash-stderr|user-memory-input|task-notification)\b/;
+
+const blockText = (content: unknown): string => {
+  if (typeof content === "string") return content;
+  return arr(content)
+    .map((b) => {
+      const block = obj(b);
+      if (block?.type === "text") return str(block.text) ?? "";
+      if (block?.type === "image") return "[image]";
+      if (block?.type === "tool_reference") return `[tool: ${str(block.tool_name) ?? "?"}]`;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+};
+
+export function parseClaudeCode(filePath: string, content: string): ParsedSession | null {
+  const sub = SUBAGENT_PATH.exec(filePath);
+  let sessionId: string | undefined;
+  let cwd: string | undefined;
+  let gitBranch: string | undefined;
+  let agentVersion: string | undefined;
+  let customTitle: string | undefined;
+  let aiTitle: string | undefined;
+  let summary: string | undefined;
+  let firstTs: number | undefined;
+  let lastTs = 0;
+  const events: AgentEvent[] = [];
+  const usageById = new Map<string, UsageRecord>();
+  const seenBlocks = new Set<string>();
+
+  for (const line of jsonLines(content)) {
+    const ts = toMs(line.timestamp);
+    if (ts !== undefined) {
+      if (firstTs === undefined || ts < firstTs) firstTs = ts;
+      if (ts > lastTs) lastTs = ts;
+    }
+    const at = ts ?? lastTs;
+    sessionId ??= str(line.sessionId);
+    cwd ??= str(line.cwd);
+    if (str(line.gitBranch) && line.gitBranch !== "HEAD") gitBranch = str(line.gitBranch);
+    agentVersion = str(line.version) ?? agentVersion;
+
+    switch (line.type) {
+      case "custom-title":
+        customTitle = str(line.customTitle) ?? customTitle;
+        break;
+      case "ai-title":
+        aiTitle = str(line.aiTitle) ?? aiTitle;
+        break;
+      case "summary":
+        summary = str(line.summary) ?? summary;
+        break;
+      case "system":
+        if (line.level === "error" || line.subtype === "api_error") {
+          events.push({ ts: at, kind: "error", text: str(line.content) ?? "API error", isError: true });
+        } else if (line.subtype === "compact_boundary") {
+          events.push({ ts: at, kind: "system", text: "Conversation compacted" });
+        }
+        break;
+      case "user": {
+        const message = obj(line.message);
+        if (!message) break;
+        // In subagent (sidechain) transcripts the "user" is the parent agent, not a human.
+        const meta = line.isMeta === true || line.isCompactSummary === true || line.isSidechain === true || sub !== null;
+        const pushText = (text: string) => {
+          if (!text.trim()) return;
+          events.push({ ts: at, kind: meta || INJECTED.test(text) ? "system" : "user", text });
+        };
+        if (typeof message.content === "string") {
+          pushText(message.content);
+          break;
+        }
+        for (const b of arr(message.content)) {
+          const block = obj(b);
+          if (!block) continue;
+          if (block.type === "text") pushText(str(block.text) ?? "");
+          else if (block.type === "tool_result") {
+            events.push({
+              ts: at,
+              kind: "tool_result",
+              text: blockText(block.content),
+              toolCallId: str(block.tool_use_id),
+              isError: block.is_error === true,
+            });
+          }
+        }
+        break;
+      }
+      case "assistant": {
+        const message = obj(line.message);
+        if (!message) break;
+        const id = str(message.id) ?? str(line.uuid) ?? `${at}`;
+        const model = str(message.model) ?? "unknown";
+        if (model === "<synthetic>") {
+          const text = blockText(message.content);
+          if (text) events.push({ ts: at, kind: line.isApiErrorMessage ? "error" : "system", text, isError: line.isApiErrorMessage === true });
+          break;
+        }
+        arr(message.content).forEach((b) => {
+          const block = obj(b);
+          if (!block) return;
+          if ((block.type === "tool_use" || block.type === "server_tool_use") && str(block.id)) {
+            const key = `tool:${str(block.id)}`;
+            if (seenBlocks.has(key)) return;
+            seenBlocks.add(key);
+            events.push({ ts: at, kind: "tool_call", toolName: str(block.name), toolCallId: str(block.id), toolInput: stringifyInput(block.input), model });
+          } else if (block.type === "text" || block.type === "thinking") {
+            const text = str(block.type === "text" ? block.text : block.thinking);
+            if (!text) return; // thinking is often omitted (empty) on newer models
+            const key = `${id}:${block.type}:${text}`;
+            if (seenBlocks.has(key)) return;
+            seenBlocks.add(key);
+            events.push({ ts: at, kind: block.type === "text" ? "assistant" : "thinking", text, model });
+          } else if (typeof block.type === "string" && block.type.endsWith("_tool_result")) {
+            events.push({ ts: at, kind: "tool_result", toolCallId: str(block.tool_use_id), text: stringifyInput(block.content) });
+          }
+        });
+        const u = obj(message.usage);
+        if (u) {
+          const previous = usageById.get(id);
+          usageById.set(id, {
+            ts: previous?.ts ?? at,
+            model,
+            usage: {
+              input: num(u.input_tokens),
+              output: num(u.output_tokens),
+              cacheRead: num(u.cache_read_input_tokens),
+              cacheWrite: num(u.cache_creation_input_tokens),
+              reasoning: num(obj(u.output_tokens_details)?.thinking_tokens),
+            },
+            cacheWrite1h: num(obj(u.cache_creation)?.ephemeral_1h_input_tokens),
+            reportedCostUsd: typeof line.costUSD === "number" ? line.costUSD : undefined,
+          });
+        }
+        break;
+      }
+    }
+  }
+
+  const usage = [...usageById.values()];
+  if (events.length === 0 && usage.length === 0) return null;
+
+  // Tool results only carry the call id; copy the tool name across for the UI.
+  const toolNames = new Map(events.filter((e) => e.kind === "tool_call").map((e) => [e.toolCallId, e.toolName]));
+  for (const e of events) if (e.kind === "tool_result" && !e.toolName) e.toolName = toolNames.get(e.toolCallId);
+
+  // A subagent has no human prompt; its title is the task the parent gave it.
+  const firstUser = events.find((e) => e.kind === "user")?.text ?? (sub ? events.find((e) => e.kind === "system")?.text : undefined);
+  return {
+    source: "claude-code",
+    nativeId: sub ? `${sub[1]}/${sub[2]}` : (sessionId ?? path.basename(filePath, ".jsonl")),
+    parentNativeId: sub?.[1],
+    title: customTitle || aiTitle || summary || titleFrom(firstUser),
+    cwd,
+    gitBranch,
+    agentVersion,
+    startedAt: firstTs ?? lastTs,
+    endedAt: lastTs,
+    events,
+    usage,
+  };
+}

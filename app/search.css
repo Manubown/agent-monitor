@@ -1,0 +1,787 @@
+/* ---------- global search (palette + deep-link targets) ---------- */
+
+/* Topbar trigger: looks like a search field. */
+.sp-trigger {
+  font: inherit;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 220px;
+  padding: 5px 6px 5px 9px;
+  color: var(--ink-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: text;
+  transition: border-color 120ms, background 120ms;
+}
+
+.sp-trigger:hover {
+  background: var(--hover);
+  border-color: var(--baseline);
+}
+
+.sp-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.sp-trigger-label {
+  flex: 1;
+  text-align: left;
+}
+
+.sp-icon {
+  flex: none;
+}
+
+.sp-kbd,
+.sp-footer kbd {
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--page);
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+/* Native modal dialog filling the viewport; the panel sits inside, clicks outside it close. */
+.sp-dialog {
+  width: 100vw;
+  height: 100vh;
+  max-width: 100vw;
+  max-height: 100vh;
+  margin: 0;
+  padding: 9vh 3vw 3vh;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  overflow: hidden;
+}
+
+.sp-dialog[open] {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.sp-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(6px) saturate(120%);
+  -webkit-backdrop-filter: blur(6px) saturate(120%);
+}
+
+.sp-dialog[open]::backdrop {
+  animation: sp-fade 140ms ease-out;
+}
+
+.sp-panel {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(760px, 100%);
+  height: min(640px, 100%);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow:
+    0 24px 80px rgba(0, 0, 0, 0.3),
+    0 2px 8px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+  animation: sp-rise 160ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+.sp-panel[data-preview] {
+  width: min(1180px, 100%);
+}
+
+@keyframes sp-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes sp-rise {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.985);
+  }
+}
+
+/* ---------- input row ---------- */
+
+.sp-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--ink-muted);
+}
+
+.sp-field > .sp-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.sp-input-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+}
+
+/* Input and mirror must share every metric so the colored copy lines up under the caret. */
+.sp-input,
+.sp-mirror {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-family: inherit;
+  font-size: 17px;
+  line-height: 26px;
+  letter-spacing: normal;
+  white-space: pre;
+}
+
+.sp-mirror {
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--ink);
+}
+
+.sp-input {
+  width: 100%;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--ink);
+  outline: none;
+}
+
+.sp-input::placeholder {
+  color: var(--ink-muted);
+}
+
+.sp-input::selection {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: transparent;
+}
+
+/* Token colors: no padding, borders or weight changes (they would shift the mirror). */
+.sp-tok {
+  border-radius: 3px;
+}
+
+.sp-tok-op,
+.sp-tok-tag {
+  color: var(--accent-ink);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.sp-tok-key {
+  color: var(--accent);
+}
+
+.sp-tok-phrase {
+  color: var(--good);
+}
+
+.sp-tok-neg {
+  color: var(--critical);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--critical) 55%, transparent);
+}
+
+.sp-tok-neg.sp-tok-op,
+.sp-tok-neg .sp-tok-key {
+  color: var(--critical);
+  background: var(--critical-wash);
+  box-shadow: 0 0 0 2px var(--critical-wash);
+}
+
+.sp-tok-err {
+  text-decoration: wavy underline var(--critical);
+  text-underline-offset: 4px;
+}
+
+.sp-sort {
+  display: inline-flex;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 2px;
+  flex: none;
+}
+
+.sp-sort button {
+  font: inherit;
+  font-size: 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-2);
+  padding: 2px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.sp-sort button:hover {
+  background: var(--hover);
+}
+
+.sp-sort button[aria-pressed="true"] {
+  background: var(--surface-raised);
+  color: var(--ink);
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.sp-sort button:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+/* Operator autocomplete. */
+.sp-ac {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% - 6px);
+  left: 46px;
+  min-width: 280px;
+  max-width: min(520px, calc(100% - 60px));
+  max-height: 300px;
+  overflow: auto;
+  padding: 4px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.sp-ac-key {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-height: none;
+}
+
+.sp-ac-item {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.sp-ac-key .sp-ac-item {
+  padding: 2px 6px;
+}
+
+.sp-ac-key .sp-ac-desc {
+  display: none;
+}
+
+.sp-ac-item:hover,
+.sp-ac-item[aria-selected="true"] {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.sp-ac-desc {
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.sp-ac-hint {
+  font-size: 11px;
+  color: var(--ink-muted);
+  padding: 0 4px;
+}
+
+/* Loading: a thin bar under the input; results stay visible underneath. */
+.sp-progress {
+  position: absolute;
+  top: 55px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  overflow: hidden;
+  z-index: 1;
+}
+
+.sp-progress::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 30%;
+  background: var(--accent);
+  animation: sp-slide 900ms ease-in-out infinite;
+}
+
+@keyframes sp-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+
+/* ---------- results ---------- */
+
+.sp-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+}
+
+.sp-panel[data-preview] .sp-body {
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+}
+
+.sp-list {
+  position: relative;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+}
+
+.sp-pad {
+  padding: 10px 12px;
+  margin: 0;
+}
+
+.sp-section {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted);
+  margin: 8px 10px 6px;
+}
+
+.sp-home {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: 12px;
+}
+
+.sp-recent {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.sp-recent-q {
+  font-family: var(--mono);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sp-cheat-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 10px;
+  display: grid;
+  gap: 4px;
+  font-size: 12.5px;
+}
+
+.sp-cheat-list li {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+
+.sp-code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent-ink);
+  justify-self: start;
+}
+
+.sp-code-btn {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.sp-code-btn:hover {
+  text-decoration: underline;
+}
+
+.sp-group,
+.sp-hit,
+.sp-more {
+  display: grid;
+  text-decoration: none;
+  color: inherit;
+  border-radius: 8px;
+  cursor: pointer;
+  outline: none;
+}
+
+.sp-group {
+  gap: 2px;
+  padding: 8px 10px 6px;
+  margin-top: 6px;
+}
+
+.sp-group:first-child {
+  margin-top: 0;
+}
+
+.sp-group-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sp-group-line .swatch {
+  margin-right: 0;
+  flex: none;
+}
+
+.sp-group-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.sp-sub {
+  flex: none;
+  font-size: 11px;
+  color: var(--ink-muted);
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.sp-tag {
+  flex: none;
+  font-size: 11px;
+  padding: 0 6px;
+  color: var(--accent-ink);
+}
+
+.sp-group-time {
+  margin-left: auto;
+  flex: none;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.sp-group-meta {
+  font-size: 12px;
+  color: var(--ink-muted);
+  padding-left: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sp-session-hit {
+  font-size: 12px;
+  color: var(--ink-2);
+  padding-left: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sp-hit {
+  grid-template-columns: 88px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 5px 10px 5px 26px;
+  font-size: 13px;
+}
+
+.sp-hit-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.sp-hit-snippet {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+  color: var(--ink-2);
+}
+
+.sp-hit-time {
+  font-size: 12px;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sp-more {
+  display: flex;
+  gap: 8px;
+  padding: 3px 10px 3px 26px;
+  font-size: 12px;
+  color: var(--accent-ink);
+}
+
+.sp-group[data-selected],
+.sp-hit[data-selected],
+.sp-more[data-selected],
+.sp-recent[data-selected] {
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.sp-hit[data-selected] .sp-hit-snippet {
+  color: var(--ink);
+}
+
+.sp-dialog mark {
+  color: inherit;
+  background: color-mix(in srgb, var(--series-4) 38%, transparent);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--series-4) 38%, transparent);
+}
+
+/* ---------- preview ---------- */
+
+.sp-preview {
+  position: relative;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+  padding: 12px 14px 24px;
+  transition: opacity 120ms;
+}
+
+.sp-preview-empty {
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+}
+
+.sp-stale {
+  opacity: 0.55;
+}
+
+.sp-preview-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 8px;
+  align-items: center;
+  padding-bottom: 10px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sp-preview-head .swatch {
+  margin-right: 0;
+}
+
+.sp-preview-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sp-preview-sub {
+  grid-column: 2;
+  font-size: 12px;
+}
+
+.sp-ctx {
+  padding: 8px 8px;
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+
+.sp-ctx + .sp-ctx {
+  margin-top: 2px;
+}
+
+.sp-ctx-hit {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.sp-ctx-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+  margin-bottom: 3px;
+}
+
+.sp-ctx-time {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.sp-ctx-input {
+  font-size: 12px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sp-ctx-text {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow: hidden;
+  color: var(--ink-2);
+}
+
+.sp-ctx-text.mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.sp-ctx-hit .sp-ctx-text {
+  max-height: none;
+  color: var(--ink);
+}
+
+/* ---------- footer ---------- */
+
+.sp-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--ink-muted);
+  background: var(--surface);
+}
+
+.sp-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.sp-keys kbd + kbd {
+  margin-left: -2px;
+}
+
+.sp-stats {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 860px) {
+  .sp-trigger {
+    min-width: 0;
+  }
+
+  .sp-trigger-label,
+  .sp-trigger .sp-kbd {
+    display: none;
+  }
+
+  .sp-dialog {
+    padding: 2vh 2vw;
+  }
+
+  .sp-panel {
+    height: 100%;
+  }
+
+  .sp-home {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sp-hit {
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding-left: 16px;
+  }
+
+  .sp-hit-kind,
+  .sp-keys {
+    display: none;
+  }
+}
+
+/* ---------- deep-link targets on the session timeline ---------- */
+
+/* Shown even when the timeline filter hides its kind: beats `.timeline[data-hide~=…] .ev[data-kind=…]`. */
+.timeline[data-hide] .ev[data-kind]:target,
+.timeline[data-hide] .ev[data-kind][data-search-target] {
+  display: grid;
+}
+
+.timeline .ev:target,
+.timeline .ev[data-search-target] {
+  scroll-margin: 96px 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 9%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 6px;
+  animation: sp-target 1.4s ease-out;
+}
+
+@keyframes sp-target {
+  from {
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sp-trigger,
+  .sp-panel,
+  .sp-preview,
+  .sp-dialog[open]::backdrop,
+  .timeline .ev:target,
+  .timeline .ev[data-search-target] {
+    animation: none;
+    transition: none;
+  }
+
+  .sp-progress::after {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+}

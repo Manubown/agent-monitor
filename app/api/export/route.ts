@@ -1,0 +1,137 @@
+import { totalTokens, type TokenUsage } from "../../../src/core/types";
+import type { Db } from "../../../src/store/db";
+import { byModel, byProject, daily, type Filters, listSessions, type SessionSummary } from "../../../src/store/queries";
+import { filtersFrom, ready, type SearchParams } from "../../lib/server";
+import { type Cell, toCsv } from "./csv";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const iso = (ts: number | null | undefined): string | null => (ts === null || ts === undefined ? null : new Date(ts).toISOString());
+
+/** Rows of one export plus its columns, in order; CSV and JSON share both. */
+interface View<T> {
+  rows(db: Db, f: Filters): T[];
+  columns: Record<string, (row: T) => Cell>;
+}
+
+const view = <T>(v: View<T>): View<unknown> => v as View<unknown>;
+
+const tokenColumns = <T>(get: (row: T) => TokenUsage): View<T>["columns"] => ({
+  inputTokens: (r) => get(r).input,
+  outputTokens: (r) => get(r).output,
+  cacheReadTokens: (r) => get(r).cacheRead,
+  cacheWriteTokens: (r) => get(r).cacheWrite,
+  reasoningTokens: (r) => get(r).reasoning,
+  totalTokens: (r) => totalTokens(get(r)),
+});
+
+const VIEWS: Record<string, View<unknown>> = {
+  // Every matching top-level session, subagent work rolled in, no paging.
+  sessions: view({
+    rows: (db, f) => listSessions(db, f, { limit: -1, offset: 0 }).rows,
+    columns: {
+      id: (s) => s.id,
+      source: (s) => s.source,
+      title: (s) => s.title,
+      cwd: (s) => s.cwd,
+      gitBranch: (s) => s.gitBranch,
+      models: (s) => s.models.join(" "),
+      tags: (s) => s.tags.join(" "),
+      startedAt: (s) => iso(s.startedAt),
+      lastActiveAt: (s) => iso(Math.max(s.endedAt, s.total.lastActive)),
+      prompts: (s) => s.userMessages,
+      subagents: (s) => s.subagents,
+      toolCalls: (s) => s.total.toolCalls,
+      errors: (s) => s.total.errors,
+      ...tokenColumns<SessionSummary>((s) => s.total),
+      costUsd: (s) => s.total.cost,
+      costSource: (s) => s.costSource,
+    },
+  }),
+  daily: view({
+    rows: daily,
+    columns: {
+      day: (d) => d.day,
+      source: (d) => d.source,
+      requests: (d) => d.requests,
+      ...tokenColumns<TokenUsage>((d) => d),
+      costUsd: (d) => d.cost,
+    },
+  }),
+  models: view({
+    rows: byModel,
+    columns: {
+      model: (m) => m.model,
+      source: (m) => m.source,
+      requests: (m) => m.requests,
+      ...tokenColumns<TokenUsage>((m) => m),
+      costUsd: (m) => m.cost,
+      costSource: (m) => m.costSource,
+    },
+  }),
+  projects: view({
+    rows: byProject,
+    columns: {
+      cwd: (p) => p.cwd,
+      sessions: (p) => p.sessions,
+      requests: (p) => p.requests,
+      ...tokenColumns<TokenUsage>((p) => p),
+      costUsd: (p) => p.cost,
+      lastActiveAt: (p) => iso(p.lastActive),
+    },
+  }),
+};
+
+const slug = (s: string): string =>
+  s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+
+/** GET /api/export?view=sessions|daily|models|projects&format=csv|json plus the page filters (range, source, project, q, tag). */
+export async function GET(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  const params: SearchParams = Object.fromEntries(url.searchParams);
+  const name = url.searchParams.get("view") ?? "sessions";
+  const format = url.searchParams.get("format") ?? "csv";
+  const v = VIEWS[name];
+  if (!v) return new Response(`Unknown view "${name}"; use ${Object.keys(VIEWS).join(", ")}.`, { status: 400 });
+  if (format !== "csv" && format !== "json") return new Response(`Unknown format "${format}"; use csv or json.`, { status: 400 });
+
+  const f = filtersFrom(params);
+  const rows = v.rows(await ready(), f);
+  const columns = Object.entries(v.columns);
+  const filename = [
+    "agent-monitor",
+    name,
+    f.range,
+    f.source,
+    f.cwd && slug(f.cwd.split(/[\\/]/).filter(Boolean).pop() ?? ""),
+    f.tag && `tag-${slug(f.tag)}`,
+    f.q && `q-${slug(f.q)}`,
+    new Date().toISOString().slice(0, 10),
+  ]
+    .filter(Boolean)
+    .join("-");
+
+  const body =
+    format === "json"
+      ? JSON.stringify(
+          rows.map((r) => Object.fromEntries(columns.map(([key, get]) => [key, get(r) ?? null]))),
+          null,
+          2,
+        )
+      : toCsv(
+          columns.map(([key]) => key),
+          rows.map((r) => columns.map(([, get]) => get(r))),
+        );
+  return new Response(body, {
+    headers: {
+      "Content-Type": format === "json" ? "application/json; charset=utf-8" : "text/csv; charset=utf-8",
+      "Content-Disposition": `attachment; filename="${filename}.${format}"`,
+      "Cache-Control": "no-store",
+    },
+  });
+}

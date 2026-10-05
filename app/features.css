@@ -1,0 +1,376 @@
+/* Live updates, active sessions, tags, resume command, export, usage windows. Colors only from tokens in globals.css. */
+
+/* ---------- live status (topbar) ---------- */
+
+.live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.live-dot,
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--good);
+}
+
+.live[data-state="connecting"] .live-dot {
+  background: var(--baseline);
+}
+
+.live[data-state="reconnecting"] {
+  color: var(--ink-muted);
+}
+
+.live[data-state="reconnecting"] .live-dot {
+  background: var(--kind-tool);
+}
+
+.pulse-dot {
+  position: relative;
+  display: inline-block;
+}
+
+.pulse-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--good);
+  animation: pulse 1.6s ease-out infinite;
+}
+
+@keyframes pulse {
+  from {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  to {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-dot::after {
+    animation: none;
+    display: none;
+  }
+}
+
+/* ---------- active sessions ---------- */
+
+.badge-live {
+  color: var(--good);
+  border-color: var(--good);
+  font-weight: 500;
+}
+
+.active-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.active-row {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  align-items: baseline;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.active-row:last-child {
+  border-bottom: none;
+}
+
+.active-row .pulse-dot {
+  align-self: center;
+}
+
+.active-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
+/* ---------- tags ---------- */
+
+.tag-list {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 3px;
+}
+
+.tag {
+  font-size: 11.5px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--hover);
+  border: 1px solid var(--border);
+  color: var(--ink-2);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+a.tag:hover {
+  color: var(--ink);
+  border-color: var(--baseline);
+}
+
+.tag-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-2);
+}
+
+.tag-chip a {
+  text-decoration: none;
+  padding: 1px 2px 1px 9px;
+}
+
+.tag-chip a:hover {
+  color: var(--ink);
+}
+
+.tag-remove {
+  font: inherit;
+  line-height: 1;
+  border: none;
+  background: none;
+  color: var(--ink-muted);
+  cursor: pointer;
+  padding: 2px 8px 2px 4px;
+  border-radius: 999px;
+}
+
+.tag-remove:hover {
+  color: var(--critical);
+}
+
+.tag-input-wrap {
+  position: relative;
+}
+
+.tag-input {
+  font: inherit;
+  font-size: 12px;
+  width: 120px;
+  color: var(--ink);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  padding: 2px 10px;
+}
+
+.tag-input:focus {
+  outline: none;
+  border-style: solid;
+  border-color: var(--accent);
+}
+
+.tag-suggestions {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 180px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  font-size: 12.5px;
+}
+
+.tag-suggestions li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.tag-suggestions li:hover,
+.tag-suggestions li[aria-selected="true"] {
+  background: var(--hover);
+}
+
+.tag-error {
+  font-size: 12px;
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  padding: 3px 4px 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  color: var(--accent-ink);
+}
+
+.filter-chip a {
+  text-decoration: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: var(--ink-muted);
+}
+
+.filter-chip a:hover {
+  color: var(--ink);
+  background: var(--hover);
+}
+
+/* ---------- session header ---------- */
+
+.head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+}
+
+.title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  /* Flex items default to min-width: auto, which lets a long resume command push the page wider than the viewport. */
+  min-width: 0;
+  max-width: 100%;
+}
+
+.cmd {
+  display: inline-flex;
+  align-items: stretch;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.cmd-text {
+  padding: 3px 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  color: var(--ink-2);
+  user-select: all;
+}
+
+.cmd-copy {
+  font: inherit;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: var(--surface-raised);
+  color: var(--ink-2);
+  padding: 3px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cmd-copy:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+/* ---------- export ---------- */
+
+.export-links {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.export-links .btn {
+  text-decoration: none;
+  font-size: 12px;
+  padding: 3px 10px;
+}
+
+.page-head-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+/* ---------- usage windows ---------- */
+
+.progress {
+  height: 10px;
+  border-radius: 5px;
+  background: var(--meter-track);
+  overflow: hidden;
+}
+
+.progress > span {
+  display: block;
+  height: 100%;
+  background: var(--meter-fill);
+  border-radius: 5px;
+}
+
+.progress-labels {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--ink-muted);
+  margin-top: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.note {
+  font-size: 13px;
+  color: var(--ink-2);
+  border-left: 3px solid var(--accent);
+  padding: 8px 12px;
+  background: var(--surface);
+  border-radius: 0 8px 8px 0;
+}
+
+.note p {
+  margin: 0;
+}
+
+.note p + p {
+  margin-top: 6px;
+}
+
+.gap-row td {
+  color: var(--ink-muted);
+  font-style: italic;
+}

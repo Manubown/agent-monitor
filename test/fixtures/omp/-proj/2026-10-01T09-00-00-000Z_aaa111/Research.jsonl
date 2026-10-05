@@ -1,0 +1,5 @@
+{"type":"title","v":1,"title":"","updatedAt":"2026-10-01T09:00:21.000Z","pad":" "}
+{"type":"session","version":3,"id":"bbb222","timestamp":"2026-10-01T09:00:21.000Z","cwd":"/work/proj","parentSession":"/home/x/.omp/agent/sessions/-proj/2026-10-01T09-00-00-000Z_aaa111.jsonl"}
+{"type":"model_change","id":"m1","parentId":null,"timestamp":"2026-10-01T09:00:21.000Z","model":"anthropic/claude-sonnet-5-5"}
+{"type":"message","id":"u1","parentId":"m1","timestamp":"2026-10-01T09:00:21.500Z","message":{"role":"user","attribution":"agent","content":"research the auth library"}}
+{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-10-01T09:01:00.000Z","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"Done."}],"usage":{"input":10,"output":1000,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01002}}}}
