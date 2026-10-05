@@ -23,6 +23,19 @@ export const duration = (ms: number): string => {
   return h < 48 ? `${h}h ${m % 60}m` : `${Math.floor(h / 24)}d ${h % 24}h`;
 };
 
+/** A bin length as the unit of a rate: "hour", "3 hours", "10 min", "30 s". */
+export const per = (ms: number): string => {
+  const [n, unit, units] =
+    ms % 86400_000 === 0
+      ? [ms / 86400_000, "day", "days"]
+      : ms % 3600_000 === 0
+        ? [ms / 3600_000, "hour", "hours"]
+        : ms % 60_000 === 0
+          ? [ms / 60_000, "minute", "min"]
+          : [ms / 1000, "second", "s"];
+  return n === 1 ? unit : `${n} ${units}`;
+};
+
 export const ago = (ts: number, now = Date.now()): string => {
   const d = now - ts;
   if (d < 60_000) return "just now";

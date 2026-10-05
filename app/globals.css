@@ -33,6 +33,17 @@
   --kind-system: #c3c2b7;
   --kind-error: #d03b3b;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  /* Geist Pixel Square (next/font variable set on <html>): brand, h1, h2 and headline figures only. */
+  --pixel: var(--font-geist-pixel-square), var(--mono);
+  /* Pixel band cells: wave levels stay within ~26% of --page toward --accent; the skyline (data) is brighter. */
+  --field-dim: #e0eaf3;
+  --field-mid: #c3d7ee;
+  --field-lit: #87b2e5;
+  --field-crest: #3d74b6;
+  /* Stepped-corner pixel frame around cards and tiles. */
+  --frame: rgba(11, 11, 11, 0.14);
+  --content-width: 1232px;
+  --gutter: 24px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -70,6 +81,11 @@
     --kind-tool: #c98500;
     --kind-system: #383835;
     --kind-error: #e66767;
+    --field-dim: #131e2b;
+    --field-mid: #192f49;
+    --field-lit: #285993;
+    --field-crest: #7aa5d8;
+    --frame: rgba(255, 255, 255, 0.13);
   }
 }
 
@@ -107,6 +123,11 @@
   --kind-tool: #c98500;
   --kind-system: #383835;
   --kind-error: #e66767;
+  --field-dim: #131e2b;
+  --field-mid: #192f49;
+  --field-lit: #285993;
+  --field-crest: #7aa5d8;
+  --frame: rgba(255, 255, 255, 0.13);
 }
 
 * {
@@ -133,12 +154,24 @@ h3 {
   line-height: 1.25;
 }
 
+/* Display type: Geist Pixel for page titles and card headings; body, tables, axes and code keep sans/mono. */
+h1,
+h2,
+.brand,
+.tile-value {
+  font-family: var(--pixel);
+  font-weight: 500;
+  font-synthesis: none;
+  letter-spacing: 0.01em;
+}
+
 h1 {
-  font-size: 22px;
+  font-size: 30px;
+  line-height: 1.1;
 }
 
 h2 {
-  font-size: 15px;
+  font-size: 16px;
 }
 
 code,
@@ -158,12 +191,12 @@ pre,
   align-items: center;
   gap: 24px;
   padding: 10px 24px;
-  background: var(--surface);
+  background: var(--page);
   border-bottom: 1px solid var(--border);
 }
 
 .brand {
-  font-weight: 600;
+  font-size: 15px;
   text-decoration: none;
   display: flex;
   align-items: center;
@@ -173,7 +206,6 @@ pre,
 .brand-mark {
   width: 10px;
   height: 10px;
-  border-radius: 3px;
   background: var(--accent);
 }
 
@@ -186,7 +218,6 @@ pre,
   text-decoration: none;
   color: var(--ink-2);
   padding: 6px 10px;
-  border-radius: 6px;
 }
 
 .nav a:hover {
@@ -197,6 +228,7 @@ pre,
 .nav a[aria-current="page"] {
   color: var(--ink);
   background: var(--hover);
+  box-shadow: inset 0 -2px 0 var(--accent);
   font-weight: 500;
 }
 
@@ -209,13 +241,18 @@ pre,
   font-size: 13px;
 }
 
+/* Content column of --content-width between gutters; full-bleed children (the pixel band) span all three tracks. */
 .main {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
+  display: grid;
+  grid-template-columns: minmax(var(--gutter), 1fr) minmax(0, var(--content-width)) minmax(var(--gutter), 1fr);
+  align-content: start;
+  row-gap: 20px;
+  padding: 24px 0;
+}
+
+.main > * {
+  grid-column: 2;
+  min-width: 0;
 }
 
 .page-head {
@@ -244,7 +281,7 @@ pre,
   color: var(--ink);
   background: var(--surface-raised);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 0;
   padding: 5px 12px;
   cursor: pointer;
 }
@@ -258,6 +295,11 @@ pre,
   cursor: progress;
 }
 
+/* Same width for "Motion on" and "Motion off" so the top bar does not shift. */
+.btn-motion {
+  min-width: 92px;
+}
+
 .filters {
   display: flex;
   flex-wrap: wrap;
@@ -269,14 +311,14 @@ pre,
   display: inline-flex;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 0;
   padding: 2px;
 }
 
 .segmented a {
   text-decoration: none;
   padding: 4px 10px;
-  border-radius: 6px;
+  border-radius: 0;
   color: var(--ink-2);
   font-size: 13px;
 }
@@ -299,7 +341,7 @@ pre,
   color: var(--ink);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 0;
   padding: 5px 8px;
   max-width: 260px;
 }
@@ -310,12 +352,23 @@ pre,
 
 /* ---------- cards, tiles ---------- */
 
-.card {
+/* Stepped-corner pixel frame: four 2px shadows offset outward leave each corner pixel empty. --bc is its color. */
+.card,
+.tile {
+  --bc: var(--frame);
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 16px;
+  border: 0;
+  border-radius: 0;
+  box-shadow:
+    0 -2px 0 var(--bc),
+    0 2px 0 var(--bc),
+    -2px 0 0 var(--bc),
+    2px 0 0 var(--bc);
   min-width: 0;
+}
+
+.card {
+  padding: 16px;
 }
 
 .card-head {
@@ -324,6 +377,12 @@ pre,
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 12px;
+}
+
+/* Long notes (a log file path) wrap instead of pushing the card past narrow screens. */
+.card-head > :not(h2) {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .grid-2 {
@@ -335,18 +394,15 @@ pre,
 .tiles {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 12px;
+  gap: 14px;
 }
 
 .tile {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  position: relative;
   padding: 14px 16px;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-width: 0;
 }
 
 .tile-label {
@@ -355,9 +411,9 @@ pre,
 }
 
 .tile-value {
-  font-size: 26px;
-  font-weight: 600;
+  font-size: 28px;
   line-height: 1.2;
+  font-variant-numeric: tabular-nums;
 }
 
 .tile-hero .tile-value {
@@ -431,7 +487,7 @@ tbody tr:hover {
   display: inline-block;
   width: 8px;
   height: 8px;
-  border-radius: 2px;
+  border-radius: 0;
   margin-right: 6px;
   vertical-align: 1px;
 }
@@ -453,12 +509,12 @@ tbody tr:hover {
   border-color: var(--critical);
 }
 
+/* Cells of 3px with 1px gaps, like the pixel bars; the number next to it carries the exact value. */
 .meter {
   display: inline-block;
   width: 80px;
   height: 6px;
-  border-radius: 3px;
-  background: var(--meter-track);
+  background: linear-gradient(90deg, var(--meter-track) 3px, transparent 0) 0 0 / 4px 100% repeat-x;
   vertical-align: middle;
   overflow: hidden;
   margin-left: 8px;
@@ -467,8 +523,7 @@ tbody tr:hover {
 .meter > span {
   display: block;
   height: 100%;
-  background: var(--meter-fill);
-  border-radius: 3px;
+  background: linear-gradient(90deg, var(--meter-fill) 3px, transparent 0) 0 0 / 4px 100% repeat-x;
 }
 
 .pager {
@@ -525,9 +580,14 @@ tbody tr:hover {
   z-index: 5;
   pointer-events: none;
   background: var(--surface-raised);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  border: 0;
+  border-radius: 0;
+  box-shadow:
+    0 -2px 0 var(--frame),
+    0 2px 0 var(--frame),
+    -2px 0 0 var(--frame),
+    2px 0 0 var(--frame),
+    0 6px 16px rgba(0, 0, 0, 0.12);
   padding: 8px 10px;
   font-size: 12px;
   min-width: 140px;
@@ -546,9 +606,8 @@ tbody tr:hover {
 }
 
 .tooltip-key {
-  width: 10px;
-  height: 2px;
-  border-radius: 1px;
+  width: 8px;
+  height: 8px;
 }
 
 .tooltip-value {
@@ -653,7 +712,7 @@ tbody tr:hover {
 .ev-dot {
   width: 8px;
   height: 8px;
-  border-radius: 50%;
+  border-radius: 0;
   margin-top: 5px;
   flex: none;
 }
@@ -674,7 +733,7 @@ tbody tr:hover {
   overflow-wrap: anywhere;
   margin: 6px 0 0;
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: 0;
   background: var(--page);
   border: 1px solid var(--border);
   max-height: 420px;
@@ -750,17 +809,19 @@ tbody tr:hover {
 }
 
 @media (max-width: 860px) {
+  :root {
+    --gutter: 16px;
+  }
+
   .grid-2 {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .main,
+  /* Wrapped to several rows, a sticky bar would cover a third of a phone screen. */
   .topbar {
+    position: static;
     padding-left: 16px;
     padding-right: 16px;
-  }
-
-  .topbar {
     flex-wrap: wrap;
     gap: 8px 16px;
   }
@@ -768,6 +829,8 @@ tbody tr:hover {
   .sync {
     margin-left: 0;
     width: 100%;
+    flex-wrap: wrap;
+    gap: 8px 12px;
   }
 
   .ev {

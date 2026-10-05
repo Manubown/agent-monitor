@@ -12,7 +12,7 @@
   color: var(--ink-muted);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 0;
   cursor: text;
   transition: border-color 120ms, background 120ms;
 }
@@ -42,7 +42,7 @@
   font-size: 11px;
   line-height: 1;
   padding: 3px 5px;
-  border-radius: 4px;
+  border-radius: 0;
   border: 1px solid var(--border);
   background: var(--page);
   color: var(--ink-muted);
@@ -69,10 +69,9 @@
   align-items: flex-start;
 }
 
+/* No backdrop blur: it would re-filter the animated pixel band behind the palette on every frame. */
 .sp-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.32);
-  backdrop-filter: blur(6px) saturate(120%);
-  -webkit-backdrop-filter: blur(6px) saturate(120%);
+  background: rgba(0, 0, 0, 0.45);
 }
 
 .sp-dialog[open]::backdrop {
@@ -86,11 +85,14 @@
   width: min(760px, 100%);
   height: min(640px, 100%);
   background: var(--surface-raised);
-  border: 1px solid var(--border);
-  border-radius: 14px;
+  border: 0;
+  border-radius: 0;
   box-shadow:
-    0 24px 80px rgba(0, 0, 0, 0.3),
-    0 2px 8px rgba(0, 0, 0, 0.12);
+    0 -2px 0 var(--frame),
+    0 2px 0 var(--frame),
+    -2px 0 0 var(--frame),
+    2px 0 0 var(--frame),
+    0 24px 80px rgba(0, 0, 0, 0.3);
   overflow: hidden;
   animation: sp-rise 160ms cubic-bezier(0.2, 0.9, 0.3, 1);
 }
@@ -216,7 +218,7 @@
   display: inline-flex;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 0;
   padding: 2px;
   flex: none;
 }
@@ -228,7 +230,7 @@
   background: transparent;
   color: var(--ink-2);
   padding: 2px 8px;
-  border-radius: 5px;
+  border-radius: 0;
   cursor: pointer;
 }
 
@@ -259,7 +261,7 @@
   padding: 4px;
   background: var(--surface-raised);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 0;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
   color: var(--ink);
   font-size: 13px;
@@ -280,7 +282,7 @@
   align-items: baseline;
   gap: 10px;
   padding: 5px 8px;
-  border-radius: 6px;
+  border-radius: 0;
   cursor: pointer;
 }
 
@@ -384,7 +386,7 @@
   gap: 10px;
   align-items: center;
   padding: 6px 10px;
-  border-radius: 8px;
+  border-radius: 0;
   cursor: pointer;
 }
 
@@ -436,7 +438,7 @@
   display: grid;
   text-decoration: none;
   color: inherit;
-  border-radius: 8px;
+  border-radius: 0;
   cursor: pointer;
   outline: none;
 }
@@ -558,7 +560,14 @@
 .sp-more[data-selected],
 .sp-recent[data-selected] {
   background: color-mix(in srgb, var(--accent) 11%, transparent);
-  box-shadow: inset 2px 0 0 var(--accent);
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+
+/* Selection moves in pixel steps: the edge bar grows 2px at a time while the highlight snaps in. */
+:root[data-motion="on"] :is(.sp-group, .sp-hit, .sp-more, .sp-recent) {
+  transition:
+    box-shadow 120ms steps(2),
+    background-color 120ms steps(2);
 }
 
 .sp-hit[data-selected] .sp-hit-snippet {
@@ -622,7 +631,7 @@
 
 .sp-ctx {
   padding: 8px 8px;
-  border-radius: 8px;
+  border-radius: 0;
   font-size: 12.5px;
 }
 
@@ -754,7 +763,7 @@
 .timeline .ev:target,
 .timeline .ev[data-search-target] {
   scroll-margin: 96px 0;
-  border-radius: 6px;
+  border-radius: 0;
   background: color-mix(in srgb, var(--accent) 9%, transparent);
   box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 9%, transparent);
   outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);

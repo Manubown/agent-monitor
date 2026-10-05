@@ -1,0 +1,149 @@
+/* Pixel band: the full-width animated field under the top bar (Overview, session detail). Colors only from tokens. */
+
+.main > .band {
+  grid-column: 1 / -1;
+  margin-top: -24px;
+}
+
+.band {
+  --key-height: 24px;
+  position: relative;
+  min-height: 236px;
+  overflow: hidden;
+  background: var(--page);
+  border-bottom: 1px solid var(--border);
+}
+
+/* The field stops above the caption strip, so the skyline stands on its ground line and the key never hides data. */
+.band-canvas {
+  position: absolute;
+  inset: 0 0 var(--key-height);
+  width: 100%;
+  height: calc(100% - var(--key-height));
+  display: block;
+}
+
+/* Content column matches .main; only the text blocks take pointer events so the field stays decorative. */
+.band-inner {
+  position: relative;
+  box-sizing: content-box;
+  max-width: var(--content-width);
+  margin: 0 auto;
+  padding: 28px var(--gutter) calc(56px + var(--key-height));
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px 32px;
+  pointer-events: none;
+}
+
+.band-inner > * {
+  pointer-events: auto;
+  min-width: 0;
+}
+
+.band h1 {
+  font-size: 56px;
+  line-height: 1;
+  letter-spacing: 0.01em;
+}
+
+.band-sub {
+  display: block;
+  margin-top: 10px;
+  color: var(--ink-2);
+}
+
+.band-stat {
+  text-align: right;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.band-figure {
+  font-family: var(--pixel);
+  font-weight: 500;
+  font-synthesis: none;
+  font-size: 40px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.band-stat > :not(.band-figure) {
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.band-key {
+  position: absolute;
+  inset: auto 0 0;
+  height: var(--key-height);
+  padding: 0 max(var(--gutter), calc((100% - var(--content-width)) / 2));
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  line-height: calc(var(--key-height) - 1px);
+  color: var(--ink-muted);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Session detail: titles are long, so a smaller title clamped to two lines; crumbs above it. */
+.band-session .band-title {
+  flex: 1 1 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.band-session h1 {
+  font-size: 32px;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.band-session .title-row {
+  flex-wrap: nowrap;
+  align-items: flex-start;
+}
+
+.band-session .band-figure {
+  font-size: 32px;
+}
+
+@media (max-width: 860px) {
+  .band {
+    min-height: 188px;
+  }
+
+  .band-inner {
+    padding-top: 20px;
+    padding-bottom: calc(44px + var(--key-height));
+  }
+
+  .band h1 {
+    font-size: 36px;
+  }
+
+  .band-session h1 {
+    font-size: 24px;
+  }
+
+  .band-stat {
+    text-align: left;
+    align-items: flex-start;
+  }
+
+  .band-figure,
+  .band-session .band-figure {
+    font-size: 28px;
+  }
+}

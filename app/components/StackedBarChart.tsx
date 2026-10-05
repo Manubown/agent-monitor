@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { integer, tokens, usd } from "../lib/format";
 
 export interface ChartSeries {
@@ -25,8 +25,8 @@ interface Props {
 }
 
 const MARGIN = { top: 8, right: 4, bottom: 24, left: 52 };
-const GAP = 2; // surface gap between stacked segments
-const RADIUS = 4;
+/** Pixel cell pitch: bars are drawn in whole cells of CELL - 1 px with 1 px gaps. */
+const CELL = 6;
 
 const formatters = {
   usd: (n: number) => usd(n),
@@ -42,17 +42,15 @@ function niceScale(max: number, count = 4): { top: number; step: number } {
   return { top: Math.ceil(max / step) * step, step };
 }
 
-/** Rect with only the top corners rounded: data-end rounded, baseline square. */
-function topRoundedRect(x: number, y: number, w: number, h: number, r: number): string {
-  const rr = Math.max(0, Math.min(r, w / 2, h));
-  return `M${x},${y + h} V${y + rr} Q${x},${y} ${x + rr},${y} H${x + w - rr} Q${x + w},${y} ${x + w},${y + rr} V${y + h} Z`;
-}
+/** Nearest whole number of cells, in px. */
+const snap = (px: number) => Math.round(px / CELL) * CELL;
 
 export function StackedBarChart({ labels, ticks, series, format, notes, height = 220, ariaLabel }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [active, setActive] = useState<number | null>(null);
   const fmt = formatters[format];
+  const maskId = `pixels-${useId().replace(/[^\w-]/g, "")}`;
 
   useEffect(() => {
     const el = ref.current;
@@ -69,6 +67,9 @@ export function StackedBarChart({ labels, ticks, series, format, notes, height =
   const plotH = height - MARGIN.top - MARGIN.bottom;
   const band = n ? plotW / n : 0;
   const barW = Math.max(1, Math.min(24, band * 0.7));
+  // Bars at least two cells wide are cut into square cells; narrower ones (many requests) only into rows.
+  const columns = barW >= 2 * CELL;
+  const baseline = MARGIN.top + plotH;
   const y = (v: number) => MARGIN.top + plotH - (v / top) * plotH;
   const tickEvery = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(plotW / 64))));
   const axisTicks = Array.from({ length: Math.round(top / step) + 1 }, (_, i) => i * step);
@@ -90,6 +91,15 @@ export function StackedBarChart({ labels, ticks, series, format, notes, height =
       <div ref={ref} style={{ height, position: "relative" }} onPointerLeave={() => setActive(null)}>
         {width > 0 && (
           <svg width={width} height={height} role="img" aria-label={ariaLabel}>
+            <defs>
+              {/* Mask luminance, not a theme color: white cells show the bars, the 1 px gaps hide them. */}
+              <pattern id={`${maskId}-cells`} width={columns ? CELL : 1} height={CELL} y={baseline % CELL} patternUnits="userSpaceOnUse">
+                <rect width={columns ? CELL - 1 : 1} height={CELL - 1} fill="white" />
+              </pattern>
+              <mask id={maskId} maskUnits="userSpaceOnUse" x={0} y={0} width={width} height={height}>
+                <rect width={width} height={height} fill={`url(#${maskId}-cells)`} />
+              </mask>
+            </defs>
             {axisTicks.map((t) => (
               <g key={t}>
                 <line x1={MARGIN.left} x2={width - MARGIN.right} y1={y(t)} y2={y(t)} stroke={t === 0 ? "var(--baseline)" : "var(--grid)"} strokeWidth={1} shapeRendering="crispEdges" />
@@ -99,9 +109,21 @@ export function StackedBarChart({ labels, ticks, series, format, notes, height =
               </g>
             ))}
             {labels.map((label, i) => {
-              const x = MARGIN.left + band * i + (band - barW) / 2;
-              let base = 0;
+              const x = columns ? snap(MARGIN.left + band * i + (band - barW) / 2) : MARGIN.left + band * i + (band - barW) / 2;
+              const w = columns ? snap(barW) : barW;
               const visible = series.filter((s) => (s.values[i] ?? 0) > 0);
+              // Stack in whole cells: each segment ends at the snapped running total, so the column's height stays
+              // true to its total; a non-zero column keeps at least one cell. Exact values are in the tooltip and table.
+              const px = (v: number) => (v / top) * plotH;
+              let sum = 0;
+              let prev = 0;
+              const segments = visible.map((s, j) => {
+                sum += s.values[i];
+                const end = j === visible.length - 1 ? Math.max(CELL, snap(px(sum))) : snap(px(sum));
+                const seg = { key: s.key, color: s.color, y: baseline - end, h: end - prev };
+                prev = end;
+                return seg;
+              });
               return (
                 <g
                   key={label}
@@ -120,21 +142,9 @@ export function StackedBarChart({ labels, ticks, series, format, notes, height =
                     height={plotH}
                     fill={active === i ? "var(--hover)" : "transparent"}
                   />
-                  {visible.map((s, j) => {
-                    const v = s.values[i];
-                    const y0 = y(base);
-                    base += v;
-                    const y1 = y(base);
-                    const isTop = j === visible.length - 1;
-                    // Leave a surface gap below every segment that sits on another one.
-                    const gap = j > 0 ? GAP : 0;
-                    const h = Math.max(1, y0 - y1 - gap);
-                    return isTop ? (
-                      <path key={s.key} d={topRoundedRect(x, y0 - gap - h, barW, h, RADIUS)} fill={s.color} />
-                    ) : (
-                      <rect key={s.key} x={x} y={y0 - gap - h} width={barW} height={h} fill={s.color} />
-                    );
-                  })}
+                  <g mask={`url(#${maskId})`}>
+                    {segments.map((seg) => seg.h > 0 && <rect key={seg.key} x={x} y={seg.y} width={w} height={seg.h} fill={seg.color} />)}
+                  </g>
                   {i % tickEvery === 0 && (
                     <text className="chart-tick" x={MARGIN.left + band * i + band / 2} y={height - 6} textAnchor="middle">
                       {(ticks ?? labels)[i]}

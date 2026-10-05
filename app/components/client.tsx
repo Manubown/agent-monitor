@@ -8,6 +8,7 @@ import type { AutoTag } from "../../src/core/autotags";
 import { addTag, removeTag } from "../actions";
 import "../features.css";
 import { AutoTagChip } from "./AutoTagChip";
+import { setMotion, useMotion } from "./pixel/motion";
 
 export function Nav() {
   const pathname = usePathname();
@@ -32,6 +33,29 @@ export function SyncButton() {
   return (
     <button className="btn" type="submit" disabled={pending}>
       {pending ? "Syncing…" : "Sync now"}
+    </button>
+  );
+}
+
+/**
+ * Top-bar switch for decorative motion (WCAG 2.2.2). Mirrors the choice on <html data-motion>, which gates the
+ * stepped hover animations in CSS; the pixel band subscribes to the same store.
+ */
+export function MotionToggle() {
+  const on = useMotion();
+  useEffect(() => {
+    if (on !== null) document.documentElement.dataset.motion = on ? "on" : "off";
+  }, [on]);
+  return (
+    <button
+      className="btn btn-motion"
+      type="button"
+      aria-pressed={on ?? undefined}
+      disabled={on === null}
+      onClick={() => setMotion(!on)}
+      title="Animated pixel band and hover effects. Follows your system's reduced-motion setting until you change it here."
+    >
+      Motion {on === null ? "" : on ? "on" : "off"}
     </button>
   );
 }

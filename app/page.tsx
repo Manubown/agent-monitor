@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { adapters, sourceLabel } from "../src/adapters";
 import { totalTokens } from "../src/core/types";
-import { type ActiveSession, activeSessions, byModel, byProject, byTool, daily, filterOptions, listSessions, overview } from "../src/store/queries";
+import { type ActiveSession, activeSessions, byModel, byProject, byTool, daily, eventTimeline, filterOptions, listSessions, overview } from "../src/store/queries";
 import { FilterBar } from "./components/FilterBar";
+import { PixelBand } from "./components/pixel/PixelBand";
 import { type ChartSeries, StackedBarChart } from "./components/StackedBarChart";
 import { Cost, Empty, ExportLinks, Meter, ProjectCell, PulseDot, SourceBadge, sourceColor, TagList, Tile } from "./components/ui";
-import { ago, dayRange, duration, integer, localDay, project, shortDay, tokens, usd } from "./lib/format";
+import { ago, dayRange, duration, integer, localDay, per, project, shortDay, tokens, usd } from "./lib/format";
 import { filtersFrom, RANGES, ready, type SearchParams } from "./lib/server";
 
 const EVENT_LABEL: Record<string, string> = {
@@ -38,6 +39,10 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
   const options = filterOptions(db);
   const now = Date.now();
   const active = activeSessions(db, now);
+  const timeline = eventTimeline(db, f, now);
+  const range = RANGES.find((r) => r.id === f.range);
+  const rangeLabel = !range || range.id === "all" ? "all time" : `last ${range.label}`;
+  const peak = Math.max(0, ...timeline.counts);
   const current = { range: f.range, source: f.source, project: f.cwd, tag: f.tag };
   /** The sessions list under the same filters, optionally sorted by the tile's measure. */
   const drill = (sort?: string) => {
@@ -76,10 +81,21 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
 
   return (
     <>
-      <div className="page-head">
-        <h1>Overview</h1>
-        <span className="muted">What your coding agents did and what it cost.</span>
-      </div>
+      <PixelBand
+        counts={timeline.counts}
+        legend={`skyline = agent events per ${per(timeline.binMs)}, ${rangeLabel}${peak ? ` · peak ${integer(peak)}` : ""}`}
+      >
+        <div className="band-title" data-quiet>
+          <h1>Overview</h1>
+          <span className="band-sub">What your coding agents did and what it cost.</span>
+        </div>
+        <div className="band-stat" data-quiet>
+          <span className="band-figure">{usd(o.cost)}</span>
+          <span>
+            {rangeLabel} · {active.length} {active.length === 1 ? "session" : "sessions"} active now
+          </span>
+        </div>
+      </PixelBand>
       {active.length > 0 && (
         <section className="card" aria-labelledby="active-now">
           <div className="card-head">

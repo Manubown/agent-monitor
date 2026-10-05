@@ -120,6 +120,64 @@ export function daily(db: Db, f: Filters): DailyRow[] {
     .all(...w.params) as unknown as DailyRow[];
 }
 
+/** Event counts in equal time bins from `from` to `to`: the skyline of the pixel bands. */
+export interface EventTimeline {
+  from: number;
+  to: number;
+  binMs: number;
+  counts: number[];
+}
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+const BIN_STEPS = [1000, 5000, 10_000, 30_000, MINUTE, 2 * MINUTE, 5 * MINUTE, 10 * MINUTE, 15 * MINUTE, 30 * MINUTE, HOUR, 2 * HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, DAY, 2 * DAY, 7 * DAY];
+/** About one bin per band column on a wide screen (narrower bands merge bins); headroom keeps exact 30-day ranges at 3 h. */
+const TIMELINE_BINS = 256;
+
+/** The smallest step from the ladder that covers `span` in at most TIMELINE_BINS bins. */
+const binFor = (span: number): number => BIN_STEPS.find((b) => span / b <= TIMELINE_BINS) ?? Math.ceil(span / TIMELINE_BINS / (7 * DAY)) * 7 * DAY;
+
+/** Bins `rows` of (bin index, count); indices outside the range (clock skew) are clamped onto its ends. */
+function toTimeline(from: number, to: number, binMs: number, rows: { bin: number; n: number }[]): EventTimeline {
+  const counts = new Array<number>(Math.max(1, Math.ceil((to - from) / binMs))).fill(0);
+  for (const r of rows) counts[Math.min(counts.length - 1, Math.max(0, r.bin))] += r.n;
+  return { from, to, binMs, counts };
+}
+
+/** Events of every kind per time bin over the filtered range (from the first filtered event when unbounded) up to `to`. */
+export function eventTimeline(db: Db, f: Filters, to: number = Date.now()): EventTimeline {
+  const w = where(f, "e.ts");
+  const firstEvent = (): number | null => {
+    // Row shape fixed by the SELECT list.
+    const row = db.prepare(`SELECT MIN(e.ts) AS first FROM events e JOIN sessions s ON s.id = e.session_id ${w.sql}`).get(...w.params) as { first: number | null };
+    return row.first;
+  };
+  const from = Math.min(f.from ?? firstEvent() ?? to, to);
+  const binMs = binFor(to - from);
+  const rows = db
+    .prepare(`SELECT CAST((e.ts - ?) / ? AS INTEGER) AS bin, COUNT(*) AS n FROM events e JOIN sessions s ON s.id = e.session_id ${w.sql} GROUP BY bin`)
+    .all(from, binMs, ...w.params) as unknown as { bin: number; n: number }[];
+  return toTimeline(from, to, binMs, rows);
+}
+
+/** Events per time bin of a session and everything it spawned, over the tree's own span. Null without events. */
+export function sessionEventTimeline(db: Db, sessionId: string): EventTimeline | null {
+  const tree = `WITH RECURSIVE tree(id, depth) AS (
+    SELECT ?, 0 UNION ALL SELECT c.id, tree.depth + 1 FROM sessions c JOIN tree ON c.parent_id = tree.id WHERE tree.depth < 64)`;
+  const span = db.prepare(`${tree} SELECT MIN(e.ts) AS lo, MAX(e.ts) AS hi FROM events e JOIN tree ON e.session_id = tree.id`).get(sessionId) as {
+    lo: number | null;
+    hi: number | null;
+  };
+  if (span.lo === null || span.hi === null) return null;
+  // Inclusive end: the last event gets a bin of its own rather than sitting on the boundary.
+  const binMs = binFor(span.hi - span.lo + 1);
+  const rows = db
+    .prepare(`${tree} SELECT CAST((e.ts - ?) / ? AS INTEGER) AS bin, COUNT(*) AS n FROM events e JOIN tree ON e.session_id = tree.id GROUP BY bin`)
+    .all(sessionId, span.lo, binMs) as unknown as { bin: number; n: number }[];
+  return toTimeline(span.lo, span.hi + 1, binMs, rows);
+}
+
 export interface ModelRow extends TokenTotals {
   model: string;
   source: string;

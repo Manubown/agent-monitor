@@ -15,7 +15,7 @@
 .pulse-dot {
   width: 8px;
   height: 8px;
-  border-radius: 50%;
+  border-radius: 0;
   flex: none;
   background: var(--good);
 }
@@ -41,7 +41,7 @@
   content: "";
   position: absolute;
   inset: 0;
-  border-radius: 50%;
+  border-radius: 0;
   background: var(--good);
   animation: pulse 1.6s ease-out infinite;
 }
@@ -200,7 +200,7 @@ a.tag:hover {
   list-style: none;
   background: var(--surface-raised);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 0;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
   font-size: 12.5px;
 }
@@ -210,7 +210,7 @@ a.tag:hover {
   justify-content: space-between;
   gap: 12px;
   padding: 4px 8px;
-  border-radius: 6px;
+  border-radius: 0;
   cursor: pointer;
 }
 
@@ -355,18 +355,17 @@ a.tag-auto:hover {
 
 /* ---------- usage windows ---------- */
 
+/* Cells like .meter: 6px lit, 2px gap. */
 .progress {
   height: 10px;
-  border-radius: 5px;
-  background: var(--meter-track);
+  background: linear-gradient(90deg, var(--meter-track) 6px, transparent 0) 0 0 / 8px 100% repeat-x;
   overflow: hidden;
 }
 
 .progress > span {
   display: block;
   height: 100%;
-  background: var(--meter-fill);
-  border-radius: 5px;
+  background: linear-gradient(90deg, var(--meter-fill) 6px, transparent 0) 0 0 / 8px 100% repeat-x;
 }
 
 .progress-labels {
@@ -385,7 +384,7 @@ a.tag-auto:hover {
   border-left: 3px solid var(--accent);
   padding: 8px 12px;
   background: var(--surface);
-  border-radius: 0 8px 8px 0;
+  border-radius: 0;
 }
 
 .note p {

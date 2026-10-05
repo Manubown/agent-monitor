@@ -1,12 +1,24 @@
 import type { Metadata } from "next";
+import localFont from "next/font/local";
 import Link from "next/link";
 import { syncStatus } from "../src/store/queries";
 import { syncNow } from "./actions";
-import { LiveRefresh, Nav, SyncButton } from "./components/client";
+import { LiveRefresh, MotionToggle, Nav, SyncButton } from "./components/client";
 import { Search, TargetEvent } from "./components/search";
 import { ago } from "./lib/format";
 import { lastSync, ready } from "./lib/server";
 import "./globals.css";
+
+/**
+ * Geist Pixel Square from the `geist` package (OFL), for display type only. Loaded from the file rather than through
+ * `geist/font/pixel`, which declares all five Geist Pixel variants and so preloads every one of them on every route.
+ */
+const geistPixel = localFont({
+  src: "../node_modules/geist/dist/fonts/geist-pixel/GeistPixel-Square.woff2",
+  variable: "--font-geist-pixel-square",
+  weight: "500",
+  adjustFontFallback: false,
+});
 
 export const metadata: Metadata = {
   title: "Agent Monitor",
@@ -19,7 +31,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const status = syncStatus(await ready());
   const last = lastSync();
   return (
-    <html lang="en">
+    <html lang="en" className={geistPixel.variable}>
       <body>
         <header className="topbar">
           <Link href="/" className="brand">
@@ -36,6 +48,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               {status.errors.length > 0 && <span className="error-text"> · {status.errors.length} failed</span>}
               {last && ` · synced ${ago(last.at)}`}
             </span>
+            <MotionToggle />
             <form action={syncNow}>
               <SyncButton />
             </form>

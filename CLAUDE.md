@@ -9,7 +9,7 @@ Local Next.js dashboard that ingests AI agent session logs (omp, Claude Code, Co
 - `src/ingest/sync.ts`: incremental sync (size + mtime); each file is written in one transaction, appending only new events when the stored prefix is unchanged (`events_hash`); keeps the search index at the database's `generation`. `archive.ts` keeps a gzip copy of every log; history survives tools pruning theirs.
 - `src/store/`: `db.ts` (schema; the main database is a cache: bump `SCHEMA_VERSION` and it is rebuilt from live logs + archive; user data lives in the attached `user.db` and is never dropped) and `queries.ts` (all reads; every query takes the same `Filters`).
 - `native/search` (Rust, tantivy, napi-rs) + `src/search/`: full-text index (`native.ts` is the only binding), query parser and search service.
-- `app/`: Next.js App Router, server components read SQLite directly via `app/lib/server.ts`. Charts are hand-rolled SVG in `app/components/StackedBarChart.tsx`. `proxy.ts` rejects non-loopback `Host` headers.
+- `app/`: Next.js App Router, server components read SQLite directly via `app/lib/server.ts`. Charts are hand-rolled SVG in `app/components/StackedBarChart.tsx` (bars masked into pixel cells; exact values in tooltip and table). `app/components/pixel/` holds the animated band (Canvas 2D in `field.ts`, colors from the `--field-*` tokens) and the Motion preference that also gates the stepped CSS hover animations via `<html data-motion>`. Display type (brand, h1, h2, tile figures) is Geist Pixel Square from the `geist` package; everything else stays sans/mono. `proxy.ts` rejects non-loopback `Host` headers.
 
 ## Rules
 

@@ -3,12 +3,13 @@ import { notFound } from "next/navigation";
 import { adapterById } from "../../../src/adapters";
 import { totalTokens } from "../../../src/core/types";
 import { sessionActivity } from "../../../src/store/activity";
-import { allTags, type EventRow, getSession, isActive, sessionEvents, TIMELINE_PAGE, timelineWindow } from "../../../src/store/queries";
+import { allTags, type EventRow, getSession, isActive, sessionEvents, sessionEventTimeline, TIMELINE_PAGE, timelineWindow } from "../../../src/store/queries";
 import { CopyCommand, TagEditor, TimelineFilter } from "../../components/client";
 import { SessionActivity } from "../../components/graph/SessionActivity";
+import { PixelBand } from "../../components/pixel/PixelBand";
 import { StackedBarChart } from "../../components/StackedBarChart";
 import { Cost, Meter, PulseDot, SourceBadge, Tile } from "../../components/ui";
-import { clock, dateTime, duration, integer, tokens, usd } from "../../lib/format";
+import { clock, dateTime, duration, integer, per, tokens, usd } from "../../lib/format";
 import { ready, type SearchParams } from "../../lib/server";
 
 const KIND_LABEL: Record<string, string> = {
@@ -135,28 +136,48 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
   const contextCache = s.input + s.cacheRead + s.cacheWrite;
   // Tool calls of the whole tree (this session and its subagents) for "What it did".
   const activity = s.total.toolCalls > 0 ? sessionActivity(db, s.id) : null;
+  const timeline = sessionEventTimeline(db, s.id);
+  const treeEvents = timeline ? timeline.counts.reduce((a, b) => a + b, 0) : 0;
 
   return (
     <>
+      <PixelBand
+        className="band-session"
+        counts={timeline?.counts ?? []}
+        legend={
+          timeline
+            ? `skyline = events per ${per(timeline.binMs)} over this session${s.subagents ? `, ${s.subagents} subagent ${s.subagents === 1 ? "run" : "runs"} included` : ""}`
+            : "no events yet"
+        }
+      >
+        <div className="band-title" data-quiet>
+          <div className="crumbs">
+            <Link href="/sessions">Sessions</Link>
+            {parent && (
+              <>
+                {" / "}
+                <Link href={`/sessions/${encodeURIComponent(parent.id)}`}>{parent.title || parent.id}</Link>
+              </>
+            )}
+          </div>
+          <div className="title-row">
+            <h1 title={s.title || s.nativeId}>{s.title || s.nativeId}</h1>
+            {live && (
+              <span className="badge badge-live" title="Activity in the last 2 minutes">
+                <PulseDot label="Live" />
+                Live
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="band-stat" data-quiet>
+          <span className="band-figure">{usd(s.total.cost)}</span>
+          <span>
+            {integer(treeEvents)} events · {duration(lastActive - s.startedAt)}
+          </span>
+        </div>
+      </PixelBand>
       <div className="page-head">
-        <div className="crumbs">
-          <Link href="/sessions">Sessions</Link>
-          {parent && (
-            <>
-              {" / "}
-              <Link href={`/sessions/${encodeURIComponent(parent.id)}`}>{parent.title || parent.id}</Link>
-            </>
-          )}
-        </div>
-        <div className="title-row">
-          <h1>{s.title || s.nativeId}</h1>
-          {live && (
-            <span className="badge badge-live" title="Activity in the last 2 minutes">
-              <PulseDot label="Live" />
-              Live
-            </span>
-          )}
-        </div>
         <dl className="meta">
           <div>
             <SourceBadge source={s.source} />

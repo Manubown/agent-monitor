@@ -10,11 +10,13 @@ import {
   allTags,
   byModel,
   claudeUsage,
+  eventTimeline,
   getSession,
   listSessions,
   normalizeTag,
   overview,
   sessionEvents,
+  sessionEventTimeline,
   TIMELINE_PAGE,
   timelineWindow,
 } from "../src/store/queries";
@@ -216,6 +218,44 @@ describe("activeSessions", () => {
     expect(s.lastEvent).toEqual({ kind: "tool_call", toolName: "Bash", ts: now - 12_000 });
     expect(s.currentModel).toBe("claude-opus-5-5");
     expect(activeSessions(db, now - 12_000 + ACTIVE_WINDOW_MS + 1)).toEqual([]);
+  });
+});
+
+describe("event timelines", () => {
+  beforeEach(() => {
+    insertSession(db, { id: "omp:main", startedAt: T, endedAt: T + 2 * H, source: "omp" });
+    insertSession(db, { id: "omp:main-sub", parentId: "omp:main", startedAt: T + H, endedAt: T + 2 * H });
+    insertSession(db, { id: "codex:other", startedAt: T, endedAt: T + H });
+    insertEvent(db, "omp:main", 0, T, "user");
+    insertEvent(db, "omp:main", 1, T + 30 * 60_000, "tool_call", "Read");
+    insertEvent(db, "omp:main-sub", 0, T + 2 * H - 1, "tool_call", "Bash");
+    insertEvent(db, "codex:other", 0, T + 10 * 60_000, "assistant");
+  });
+
+  it("counts filtered events in hourly bins over a 7-day range", () => {
+    const to = T + 7 * 24 * H;
+    const t = eventTimeline(db, { from: T, source: "omp" }, to);
+    expect(t).toMatchObject({ from: T, to, binMs: H });
+    expect(t.counts).toHaveLength(168);
+    expect(t.counts.slice(0, 3)).toEqual([2, 1, 0]);
+    expect(t.counts.reduce((a, b) => a + b, 0)).toBe(3);
+  });
+
+  it("starts an unbounded range at the first matching event", () => {
+    const t = eventTimeline(db, {}, T + 24 * H);
+    expect(t.from).toBe(T);
+    expect(t.binMs).toBe(10 * 60_000);
+    expect(t.counts[0]).toBe(1);
+    expect(t.counts[1]).toBe(1);
+    expect(t.counts.reduce((a, b) => a + b, 0)).toBe(4);
+  });
+
+  it("covers a session tree over its own span, subagents included", () => {
+    const t = sessionEventTimeline(db, "omp:main");
+    expect(t).toMatchObject({ from: T, to: T + 2 * H, binMs: 30_000 });
+    expect(t?.counts).toHaveLength(240);
+    expect([t?.counts[0], t?.counts[60], t?.counts[239]]).toEqual([1, 1, 1]);
+    expect(sessionEventTimeline(db, "omp:missing")).toBeNull();
   });
 });
 
