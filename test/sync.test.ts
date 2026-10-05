@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import type { Env } from "../src/core/adapter";
+import type { Adapter, Env } from "../src/core/adapter";
 import { syncAll } from "../src/ingest/sync";
 import { DEFAULT_PRICES } from "../src/core/pricing";
 import type { IndexDoc, SearchIndex } from "../src/search/native";
@@ -205,5 +205,38 @@ describe("archive and incremental sync", () => {
     await sync();
     expect(fake.batches[0]?.reset).toBe(true);
     expect([...fake.docs.values()].some((d) => d.text === "missed while locked")).toBe(true);
+  });
+
+  it("retries a file whose write failed on the next sync, but not one that fails to parse", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "am-retry-"));
+    fs.writeFileSync(path.join(dir, "a.log"), "x");
+    fs.writeFileSync(path.join(dir, "b.log"), "x");
+    let writeFails = true;
+    let parses = { a: 0, b: 0 };
+    const adapter: Adapter = {
+      id: "fake",
+      label: "Fake",
+      roots: () => [dir],
+      match: (p) => p.endsWith(".log"),
+      parse: (p) => {
+        if (p.endsWith("b.log")) {
+          parses.b++;
+          throw new Error("unparseable");
+        }
+        parses.a++;
+        // NaN timestamps violate NOT NULL in SQLite: the write fails although the parse succeeded.
+        const ts = writeFails ? Number.NaN : 1;
+        return { source: "fake", nativeId: "a", startedAt: ts, endedAt: ts, events: [], usage: [] };
+      },
+    };
+    const sync = () => syncAll(ctx.db, { env: {}, adapters: [adapter], prices: DEFAULT_PRICES, archiveDir: path.join(dir, "archive") });
+
+    expect((await sync()).errors.map((e) => path.basename(e.path)).sort()).toEqual(["a.log", "b.log"]);
+    writeFails = false;
+    parses = { a: 0, b: 0 };
+    const r = await sync();
+    expect(parses).toEqual({ a: 1, b: 0 });
+    expect(r.errors).toEqual([]);
+    expect(getSession(ctx.db, "fake:a")).not.toBeNull();
   });
 });

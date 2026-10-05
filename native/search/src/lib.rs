@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use napi::{Error, Result};
 use napi_derive::napi;
@@ -188,6 +189,8 @@ pub struct SearchIndex {
     reader: IndexReader,
     fields: Fields,
     analyzer: TextAnalyzer,
+    /// Opstamp of the commit the reader was last loaded at (see `refresh`).
+    loaded_opstamp: AtomicU64,
 }
 
 #[napi]
@@ -198,17 +201,33 @@ impl SearchIndex {
         let index = open_or_recreate(Path::new(&dir), &schema)?;
         let analyzer = code_analyzer();
         index.tokenizers().register(TOKENIZER, analyzer.clone());
+        // Manual reloads only. OnCommitWithDelay starts a meta.json watcher thread that keeps running while
+        // Node exits and then calls into torn-down code: next-server dumped core with SIGSEGV in that thread.
         let reader = index
             .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .reload_policy(ReloadPolicy::Manual)
             .try_into()
             .map_err(err)?;
+        let opstamp = index.load_metas().map_err(err)?.opstamp;
         Ok(SearchIndex {
             index,
             reader,
             fields,
             analyzer,
+            loaded_opstamp: AtomicU64::new(opstamp),
         })
+    }
+
+    /// Reload the reader when another process (the CLI's sync) committed since it was loaded. Reading meta.json
+    /// is cheap next to a search, and it replaces the watcher thread. If meta.json cannot be read (the index
+    /// directory was deleted under a running server), keep serving the snapshot already loaded.
+    fn refresh(&self) -> Result<()> {
+        let Ok(metas) = self.index.load_metas() else { return Ok(()) };
+        if self.loaded_opstamp.load(AtomicOrdering::Acquire) != metas.opstamp {
+            self.reader.reload().map_err(err)?;
+            self.loaded_opstamp.store(metas.opstamp, AtomicOrdering::Release);
+        }
+        Ok(())
     }
 
     /// Payload of the last commit as a number; null for a fresh index.
@@ -219,8 +238,9 @@ impl SearchIndex {
     }
 
     #[napi]
-    pub fn doc_count(&self) -> f64 {
-        self.reader.searcher().num_docs() as f64
+    pub fn doc_count(&self) -> Result<f64> {
+        self.refresh()?;
+        Ok(self.reader.searcher().num_docs() as f64)
     }
 
     /// Applies deletions and additions in a single commit. The writer is released afterwards.
@@ -261,6 +281,7 @@ impl SearchIndex {
         // Let pending merges finish so small incremental commits do not pile up segments.
         writer.wait_merging_threads().map_err(err)?;
         self.reader.reload().map_err(err)?;
+        self.loaded_opstamp.store(self.index.load_metas().map_err(err)?.opstamp, AtomicOrdering::Release);
         Ok(())
     }
 
@@ -270,6 +291,7 @@ impl SearchIndex {
             return Ok(Vec::new());
         }
         let must = self.parse_clauses(&req.must)?;
+        self.refresh()?;
         let must_not = self.parse_clauses(&req.must_not)?;
         let f = self.fields;
 

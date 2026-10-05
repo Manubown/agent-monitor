@@ -223,6 +223,32 @@ a.tag:hover {
   font-size: 12px;
 }
 
+/* Automatic tags: dashed outline, no fill, a sparkle; manual tags stay solid with a '#'. */
+.tag-auto,
+.badge.tag-auto {
+  background: transparent;
+  gap: 0;
+  border: 1px dashed var(--baseline);
+  color: var(--ink-muted);
+}
+
+.tag-auto::before {
+  content: "\2726";
+  margin-right: 3px;
+  font-size: 0.85em;
+  color: var(--accent);
+}
+
+a.tag-auto:hover {
+  color: var(--ink);
+  border-color: var(--ink-muted);
+}
+
+.tag-editor .tag-auto {
+  font-size: 12px;
+  padding: 1px 9px;
+}
+
 .filter-chip {
   display: inline-flex;
   align-items: center;

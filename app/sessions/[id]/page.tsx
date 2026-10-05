@@ -2,8 +2,10 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { adapterById } from "../../../src/adapters";
 import { totalTokens } from "../../../src/core/types";
+import { sessionActivity } from "../../../src/store/activity";
 import { allTags, type EventRow, getSession, isActive, sessionEvents, TIMELINE_PAGE, timelineWindow } from "../../../src/store/queries";
 import { CopyCommand, TagEditor, TimelineFilter } from "../../components/client";
+import { SessionActivity } from "../../components/graph/SessionActivity";
 import { StackedBarChart } from "../../components/StackedBarChart";
 import { Cost, Meter, PulseDot, SourceBadge, Tile } from "../../components/ui";
 import { clock, dateTime, duration, integer, tokens, usd } from "../../lib/format";
@@ -131,6 +133,8 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
   const maxTool = Math.max(1, ...tools.map((t) => t.calls));
   const lastActive = Math.max(s.total.lastActive, s.endedAt);
   const contextCache = s.input + s.cacheRead + s.cacheWrite;
+  // Tool calls of the whole tree (this session and its subagents) for "What it did".
+  const activity = s.total.toolCalls > 0 ? sessionActivity(db, s.id) : null;
 
   return (
     <>
@@ -191,7 +195,7 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
           </div>
         </dl>
         <div className="head-actions">
-          <TagEditor sessionId={s.id} tags={s.tags} suggestions={allTags(db)} />
+          <TagEditor sessionId={s.id} tags={s.tags} autoTags={s.autoTags} suggestions={allTags(db)} />
           {resume && (
             <span className="title-row">
               {root.id !== s.id && <span className="muted">Resume via parent session</span>}
@@ -210,7 +214,7 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
         />
         <Tile label="Tokens" value={tokens(totalTokens(s.total))} note={`${tokens(s.total.output)} output`} />
         <Tile label="Model requests" value={integer(s.requests)} note={s.subagents ? `this session; ${s.subagents} subagent runs` : undefined} />
-        <Tile label="Tool calls" value={integer(s.total.toolCalls)} note={`${integer(s.total.errors)} errors`} />
+        <Tile label="Tool calls" value={integer(s.total.toolCalls)} href="#tools" note={`${integer(s.total.errors)} errors`} />
         <Tile label="Cache hit rate" value={contextCache ? `${Math.round((s.cacheRead / contextCache) * 100)}%` : "—"} note="this session" />
       </div>
 
@@ -229,6 +233,19 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
             height={180}
             ariaLabel="Context tokens per model request"
           />
+        </section>
+      )}
+
+      {activity && activity.actions.length > 0 && (
+        <section className="card">
+          <div className="card-head">
+            <h2>What it did</h2>
+            <span className="muted">
+              {integer(activity.actions.length)} tool calls
+              {activity.agents.length > 1 ? ` across this session and ${activity.agents.length - 1} subagents` : ", this session"}
+            </span>
+          </div>
+          <SessionActivity data={activity} />
         </section>
       )}
 
@@ -263,7 +280,7 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
             </tbody>
           </table>
         </section>
-        <section className="card">
+        <section className="card" id="tools">
           <div className="card-head">
             <h2>Tools used</h2>
             <span className="muted">this session</span>
@@ -317,7 +334,7 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
               </thead>
               <tbody>
                 {children.map((c) => (
-                  <tr key={c.id}>
+                  <tr key={c.id} className="row-click">
                     <td>
                       <Link className="row-link" href={`/sessions/${encodeURIComponent(c.id)}`}>
                         {c.title || c.nativeId}

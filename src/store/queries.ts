@@ -1,4 +1,5 @@
 import type { SQLInputValue } from "node:sqlite";
+import type { AutoTag } from "../core/autotags";
 import { normalizeModel } from "../core/pricing";
 import type { UsageInput } from "../core/windows";
 import type { Db } from "./db";
@@ -12,7 +13,7 @@ export interface Filters {
   cwd?: string;
   /** Substring match on title or working directory. */
   q?: string;
-  /** Manual tag; matches tagged sessions and everything they spawned. */
+  /** Manual or automatic tag; matches tagged sessions and everything they spawned. */
   tag?: string;
 }
 
@@ -47,10 +48,11 @@ function where(f: Filters, tsColumn: string | null): { sql: string; params: SQLI
   }
   if (f.tag) {
     clauses.push(
-      `s.id IN (WITH RECURSIVE tagged(id) AS (SELECT session_id FROM user.tags WHERE tag = ?
+      `s.id IN (WITH RECURSIVE tagged(id) AS (
+         SELECT session_id FROM (SELECT session_id FROM user.tags WHERE tag = ? UNION SELECT session_id FROM auto_tags WHERE tag = ?)
          UNION SELECT c.id FROM sessions c JOIN tagged ON c.parent_id = tagged.id) SELECT id FROM tagged)`,
     );
-    params.push(f.tag);
+    params.push(f.tag, f.tag);
   }
   return { sql: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "", params };
 }
@@ -208,6 +210,8 @@ export interface SessionRow {
   costSource: string;
   /** Manual tags, alphabetical. */
   tags: string[];
+  /** Automatic tags (src/core/autotags.ts), alphabetical, without those also set manually. */
+  autoTags: AutoTag[];
 }
 
 const SESSION_COLUMNS = `
@@ -216,10 +220,18 @@ const SESSION_COLUMNS = `
   s.event_count AS eventCount, s.user_messages AS userMessages, s.tool_calls AS toolCalls, s.tool_errors AS toolErrors,
   s.errors, s.requests, s.input_tokens AS input, s.output_tokens AS output, s.cache_read_tokens AS cacheRead,
   s.cache_write_tokens AS cacheWrite, s.reasoning_tokens AS reasoning, s.cost_usd AS cost, s.cost_source AS costSource,
-  (SELECT json_group_array(tag) FROM (SELECT tag FROM user.tags WHERE session_id = s.id ORDER BY tag)) AS tags`;
+  (SELECT json_group_array(tag) FROM (SELECT tag FROM user.tags WHERE session_id = s.id ORDER BY tag)) AS tags,
+  (SELECT json_group_array(json_object('tag', tag, 'reason', reason)) FROM (
+     SELECT tag, reason FROM auto_tags WHERE session_id = s.id AND tag NOT IN (SELECT tag FROM user.tags WHERE session_id = s.id) ORDER BY tag
+   )) AS autoTags`;
 
 const toSession = (row: Record<string, unknown>): SessionRow =>
-  ({ ...row, models: JSON.parse(String(row.models)), tags: JSON.parse(String(row.tags ?? "[]")) }) as SessionRow;
+  ({
+    ...row,
+    models: JSON.parse(String(row.models)),
+    tags: JSON.parse(String(row.tags ?? "[]")),
+    autoTags: JSON.parse(String(row.autoTags ?? "[]")),
+  }) as SessionRow;
 
 /** A top-level session with its subagents' work rolled in. */
 export interface SessionSummary extends SessionRow {
@@ -260,17 +272,39 @@ const toSummary = (row: Record<string, unknown>): SessionSummary => {
   };
 };
 
+/** Orders for the sessions list; every one but `recent` ranks by the rolled-up totals of the session tree. */
+export const SESSION_SORTS = ["recent", "cost", "tokens", "requests", "tools", "errors", "duration"] as const;
+export type SessionSort = (typeof SESSION_SORTS)[number];
+
+export const isSessionSort = (v: unknown): v is SessionSort => SESSION_SORTS.includes(v as SessionSort);
+
+const SORT_KEY: Record<Exclude<SessionSort, "recent">, string> = {
+  cost: "SUM(x.cost_usd)",
+  tokens: "SUM(x.input_tokens + x.output_tokens + x.cache_read_tokens + x.cache_write_tokens)",
+  requests: "SUM(x.requests)",
+  tools: "SUM(x.tool_calls)",
+  errors: "SUM(x.errors + x.tool_errors)",
+  duration: "MAX(x.ended_at) - s.started_at",
+};
+
 /**
- * Top-level sessions with activity (their own or a subagent's) in the range, most recently active first.
- * The order is total (ties broken by id) so pages never overlap; `limit: -1` returns every row.
+ * Top-level sessions with activity (their own or a subagent's) in the range, most recently active first unless `sort`
+ * says otherwise (descending; unpriced cost sorts last). The order is total (ties broken by last activity, then id) so
+ * pages never overlap; `limit: -1` returns every row.
  */
-export function listSessions(db: Db, f: Filters, page: { limit: number; offset: number }): { rows: SessionSummary[]; total: number } {
+export function listSessions(
+  db: Db,
+  f: Filters,
+  page: { limit: number; offset: number },
+  sort: SessionSort = "recent",
+): { rows: SessionSummary[]; total: number } {
   const w = where(f, null);
   const having = f.from !== undefined ? "HAVING MAX(x.ended_at) >= ?" : "";
   const params = f.from !== undefined ? [...w.params, f.from] : w.params;
   const grouped = `FROM tree JOIN sessions s ON s.id = tree.root JOIN sessions x ON x.id = tree.id ${w.sql} GROUP BY s.id ${having}`;
+  const order = `${sort === "recent" ? "" : `${SORT_KEY[sort]} DESC, `}MAX(x.ended_at) DESC, s.id`;
   const rows = db
-    .prepare(`${TREE} SELECT ${SESSION_COLUMNS}, ${ROLLUP} ${grouped} ORDER BY MAX(x.ended_at) DESC, s.id LIMIT ? OFFSET ?`)
+    .prepare(`${TREE} SELECT ${SESSION_COLUMNS}, ${ROLLUP} ${grouped} ORDER BY ${order} LIMIT ? OFFSET ?`)
     .all(...params, page.limit, page.offset) as Record<string, unknown>[];
   const { total } = db.prepare(`${TREE} SELECT COUNT(*) AS total FROM (SELECT s.id ${grouped})`).get(...params) as { total: number };
   return { rows: rows.map(toSummary), total };
@@ -313,10 +347,19 @@ export function activeSessions(db: Db, now: number): ActiveSession[] {
   });
 }
 
-/** Every manual tag with the number of sessions carrying it, most used first. Plain objects: the result is passed to a client component. */
-export function allTags(db: Db): { tag: string; count: number }[] {
-  const rows = db.prepare("SELECT tag, COUNT(*) AS count FROM user.tags GROUP BY tag ORDER BY count DESC, tag").all() as { tag: string; count: number }[];
-  return rows.map(({ tag, count }) => ({ tag, count }));
+/**
+ * Every tag, manual or automatic, with the number of sessions carrying it; `auto` when no session has it manually.
+ * Manual tags first, then most used. Plain objects: the result is passed to a client component.
+ */
+export function allTags(db: Db): { tag: string; count: number; auto: boolean }[] {
+  const rows = db
+    .prepare(
+      `SELECT tag, COUNT(DISTINCT session_id) AS count, MIN(auto) AS auto
+       FROM (SELECT tag, session_id, 0 AS auto FROM user.tags UNION ALL SELECT tag, session_id, 1 FROM auto_tags)
+       GROUP BY tag ORDER BY auto, count DESC, tag`,
+    )
+    .all() as { tag: string; count: number; auto: number }[];
+  return rows.map(({ tag, count, auto }) => ({ tag, count, auto: auto === 1 }));
 }
 
 const TAG_PATTERN = /^[a-z0-9][a-z0-9_/-]{0,39}$/;

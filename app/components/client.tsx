@@ -4,8 +4,10 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState, useTransition } from "react";
 import { useFormStatus } from "react-dom";
+import type { AutoTag } from "../../src/core/autotags";
 import { addTag, removeTag } from "../actions";
 import "../features.css";
+import { AutoTagChip } from "./AutoTagChip";
 
 export function Nav() {
   const pathname = usePathname();
@@ -184,8 +186,21 @@ export function CopyCommand({ command, label = "Copy command" }: { command: stri
   );
 }
 
-/** Manual tags of one session: chips with remove buttons and an input with suggestions from existing tags. */
-export function TagEditor({ sessionId, tags, suggestions }: { sessionId: string; tags: string[]; suggestions: { tag: string; count: number }[] }) {
+/**
+ * Tags of one session: manual chips with remove buttons, automatic chips (not removable; adding the same tag
+ * manually pins it), and an input with suggestions from existing manual and automatic tags.
+ */
+export function TagEditor({
+  sessionId,
+  tags,
+  autoTags,
+  suggestions,
+}: {
+  sessionId: string;
+  tags: string[];
+  autoTags: AutoTag[];
+  suggestions: { tag: string; count: number; auto: boolean }[];
+}) {
   const [current, setCurrent] = useState(tags);
   const [text, setText] = useState("");
   const [open, setOpen] = useState(false);
@@ -255,6 +270,11 @@ export function TagEditor({ sessionId, tags, suggestions }: { sessionId: string;
           </button>
         </span>
       ))}
+      {autoTags
+        .filter((t) => !current.includes(t.tag))
+        .map((t) => (
+          <AutoTagChip key={t.tag} {...t} />
+        ))}
       <span className="tag-input-wrap">
         <input
           className="tag-input"
@@ -293,7 +313,7 @@ export function TagEditor({ sessionId, tags, suggestions }: { sessionId: string;
                   add(m.tag);
                 }}
               >
-                #{m.tag} <span className="muted">{m.count}</span>
+                #{m.tag} <span className="muted">{m.auto ? `auto · ${m.count}` : m.count}</span>
               </li>
             ))}
           </ul>

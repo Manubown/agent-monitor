@@ -175,4 +175,16 @@ describe("updates", () => {
     expect(openSearchIndex(dir).generation()).toBe(43);
     expect(openSearchIndex(dir).docCount()).toBe(DOCS.length - 1);
   });
+
+  it("sees commits made through another handle, as from the CLI's sync", () => {
+    const dir = tempDir();
+    const server = openSearchIndex(dir);
+    server.apply({ deleteSessions: [], add: DOCS, generation: 1 });
+    expect(seqs(server.search(req([term("cargo")])))).toEqual([6]);
+
+    const cli = openSearchIndex(dir);
+    cli.apply({ deleteSessions: ["codex:c"], add: [doc("omp:z", 9, "cargo build --release")], generation: 2 });
+    expect(seqs(server.search(req([term("cargo")])))).toEqual([9]);
+    expect(server.docCount()).toBe(DOCS.length);
+  });
 });

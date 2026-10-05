@@ -1,4 +1,5 @@
 import { sourceLabel } from "../adapters";
+import type { AutoTag } from "../core/autotags";
 import type { Db } from "../store/db";
 import type { SearchIndex, SearchRequest } from "./native";
 import { EVENT_KINDS, hasSessionFacets, isEmptyQuery, type ParsedQuery, parseQuery, type Sort } from "./query";
@@ -17,6 +18,8 @@ export interface SessionInfo {
   parentId: string | null;
   parentTitle: string | null;
   tags: string[];
+  /** Automatic tags not also set manually. */
+  autoTags: AutoTag[];
 }
 
 export interface ResultHit {
@@ -77,8 +80,11 @@ export function resolveSessions(db: Db, p: ParsedQuery): string[] {
   anyOf("s.models", p.models);
   anyOf("s.git_branch", p.branches);
   if (p.tags.length) {
-    clauses.push("s.id IN (SELECT session_id FROM user.tags WHERE lower(tag) IN (SELECT value FROM json_each(?)))");
-    params.push(JSON.stringify(p.tags));
+    clauses.push(
+      `s.id IN (SELECT session_id FROM user.tags WHERE lower(tag) IN (SELECT value FROM json_each(?))
+         UNION SELECT session_id FROM auto_tags WHERE tag IN (SELECT value FROM json_each(?)))`,
+    );
+    params.push(JSON.stringify(p.tags), JSON.stringify(p.tags));
   }
   if (p.sessionIds.length) {
     clauses.push(`(${p.sessionIds.map(() => "s.id = ? OR s.native_id LIKE ? ESCAPE '\\'").join(" OR ")})`);
@@ -101,7 +107,7 @@ interface SessionRow {
   parentTitle: string | null;
 }
 
-/** Session info with tags for the given ids, keyed by id. */
+/** Session info with manual and automatic tags for the given ids, keyed by id. */
 export function sessionInfo(db: Db, ids: string[]): Map<string, SessionInfo> {
   const out = new Map<string, SessionInfo>();
   if (!ids.length) return out;
@@ -114,11 +120,18 @@ export function sessionInfo(db: Db, ids: string[]): Map<string, SessionInfo> {
        WHERE s.id IN (SELECT value FROM json_each(?))`,
     )
     .all(json) as unknown as SessionRow[];
-  for (const r of rows) out.set(r.id, { ...r, sourceLabel: sourceLabel(r.source), tags: [] });
+  for (const r of rows) out.set(r.id, { ...r, sourceLabel: sourceLabel(r.source), tags: [], autoTags: [] });
   const tags = db
     .prepare("SELECT session_id AS id, tag FROM user.tags WHERE session_id IN (SELECT value FROM json_each(?)) ORDER BY tag")
     .all(json) as { id: string; tag: string }[];
   for (const t of tags) out.get(t.id)?.tags.push(t.tag);
+  const auto = db
+    .prepare("SELECT session_id AS id, tag, reason FROM auto_tags WHERE session_id IN (SELECT value FROM json_each(?)) ORDER BY tag")
+    .all(json) as { id: string; tag: string; reason: string }[];
+  for (const { id, tag, reason } of auto) {
+    const s = out.get(id);
+    if (s && !s.tags.includes(tag)) s.autoTags.push({ tag, reason });
+  }
   return out;
 }
 
@@ -159,6 +172,9 @@ export function search(db: Db, index: SearchIndex, query: string, opts: SearchOp
   const hits = index.search(req);
 
   // Group by session in first-appearance order, so the index's order carries through.
+  // Scoped by `in:` or matching a single session, every hit is listed: that is what "more in this session" asks for.
+  const scoped = p.sessionIds.length > 0 || new Set(hits.map((h) => h.sessionId)).size === 1;
+  const cap = scoped ? Infinity : perGroup;
   const bySession = new Map<string, { hits: typeof hits; more: number; sessionHit: ResultGroup["sessionHit"] }>();
   for (const h of hits) {
     let g = bySession.get(h.sessionId);
@@ -167,7 +183,7 @@ export function search(db: Db, index: SearchIndex, query: string, opts: SearchOp
       bySession.set(h.sessionId, g);
     }
     if (h.seq < 0) g.sessionHit ??= { snippet: h.snippet, highlights: h.highlights };
-    else if (g.hits.length < perGroup) g.hits.push(h);
+    else if (g.hits.length < cap) g.hits.push(h);
     else g.more++;
   }
 
@@ -323,7 +339,10 @@ export function facets(db: Db): Facets {
       `SELECT MIN(tool_name) AS name, COUNT(*) AS count FROM events
        WHERE kind = 'tool_call' AND tool_name IS NOT NULL GROUP BY lower(tool_name) ORDER BY count DESC LIMIT 60`,
     ),
-    tags: all("SELECT tag AS name, COUNT(*) AS count FROM user.tags GROUP BY tag ORDER BY count DESC, tag"),
+    tags: all(
+      `SELECT tag AS name, COUNT(DISTINCT session_id) AS count FROM (SELECT tag, session_id FROM user.tags UNION ALL SELECT tag, session_id FROM auto_tags)
+       GROUP BY tag ORDER BY count DESC, tag`,
+    ),
     projects: all(
       `SELECT cwd, COUNT(*) AS count FROM sessions WHERE cwd IS NOT NULL AND cwd != ''
        GROUP BY cwd ORDER BY MAX(ended_at) DESC LIMIT 60`,

@@ -1,6 +1,9 @@
 import Link from "next/link";
 import { adapters, sourceLabel } from "../../src/adapters";
+import type { AutoTag } from "../../src/core/autotags";
 import { project, usd } from "../lib/format";
+import { AutoTagChip } from "./AutoTagChip";
+import "../rows.css";
 
 /** Each tool keeps one categorical slot everywhere, in registry order, regardless of filters. */
 export function sourceColor(source: string): string {
@@ -17,13 +20,29 @@ export function SourceBadge({ source }: { source: string }) {
   );
 }
 
-export function Tile({ label, value, note, hero }: { label: string; value: string; note?: React.ReactNode; hero?: boolean }) {
-  return (
-    <div className={hero ? "tile tile-hero" : "tile"}>
-      <span className="tile-label">{label}</span>
+/** Headline number; with `href` the whole tile is a link that drills down to the rows behind it. */
+export function Tile({ label, value, note, hero, href }: { label: string; value: string; note?: React.ReactNode; hero?: boolean; href?: string }) {
+  const className = `${hero ? "tile tile-hero" : "tile"}${href ? " tile-link" : ""}`;
+  const body = (
+    <>
+      <span className="tile-label">
+        {label}
+        {href && (
+          <span className="tile-arrow" aria-hidden="true">
+            →
+          </span>
+        )}
+      </span>
       <span className="tile-value">{value}</span>
       {note && <span className="tile-note">{note}</span>}
-    </div>
+    </>
+  );
+  return href ? (
+    <Link className={className} href={href}>
+      {body}
+    </Link>
+  ) : (
+    <div className={className}>{body}</div>
   );
 }
 
@@ -68,15 +87,18 @@ export function Empty({ children }: { children: React.ReactNode }) {
   return <div className="empty">{children}</div>;
 }
 
-/** Manual tags as small chips linking to the sessions list filtered by that tag. */
-export function TagList({ tags }: { tags: string[] }) {
-  if (!tags.length) return null;
+/** Manual tags, then automatic ones, as small chips linking to the sessions list filtered by that tag. */
+export function TagList({ tags, autoTags = [] }: { tags: string[]; autoTags?: AutoTag[] }) {
+  if (!tags.length && !autoTags.length) return null;
   return (
     <span className="tag-list">
       {tags.map((t) => (
         <Link key={t} className="tag" href={`/sessions?tag=${encodeURIComponent(t)}`}>
           #{t}
         </Link>
+      ))}
+      {autoTags.map((t) => (
+        <AutoTagChip key={t.tag} {...t} />
       ))}
     </span>
   );

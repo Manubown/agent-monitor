@@ -4,7 +4,7 @@ import { totalTokens } from "../src/core/types";
 import { type ActiveSession, activeSessions, byModel, byProject, byTool, daily, filterOptions, listSessions, overview } from "../src/store/queries";
 import { FilterBar } from "./components/FilterBar";
 import { type ChartSeries, StackedBarChart } from "./components/StackedBarChart";
-import { Cost, Empty, ExportLinks, Meter, ProjectCell, PulseDot, SourceBadge, sourceColor, Tile } from "./components/ui";
+import { Cost, Empty, ExportLinks, Meter, ProjectCell, PulseDot, SourceBadge, sourceColor, TagList, Tile } from "./components/ui";
 import { ago, dayRange, duration, integer, localDay, project, shortDay, tokens, usd } from "./lib/format";
 import { filtersFrom, RANGES, ready, type SearchParams } from "./lib/server";
 
@@ -39,6 +39,12 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
   const now = Date.now();
   const active = activeSessions(db, now);
   const current = { range: f.range, source: f.source, project: f.cwd, tag: f.tag };
+  /** The sessions list under the same filters, optionally sorted by the tile's measure. */
+  const drill = (sort?: string) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries({ ...current, sort })) if (v) qs.set(k, v);
+    return `/sessions?${qs}`;
+  };
 
   // Continuous day axis so idle days show as gaps rather than disappearing.
   const firstDay = f.from ? localDay(f.from) : days[0]?.day;
@@ -82,7 +88,7 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
           </div>
           <div className="active-list">
             {active.map((s) => (
-              <div key={s.id} className="active-row">
+              <div key={s.id} className="active-row row-click">
                 <PulseDot />
                 <div>
                   <div className="active-title">
@@ -91,6 +97,7 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
                     </Link>
                     <SourceBadge source={s.source} />
                     {s.currentModel && <span className="mono muted">{s.currentModel}</span>}
+                    <TagList tags={s.tags} autoTags={s.autoTags} />
                   </div>
                   <span className="cell-sub">
                     {lastEventLabel(s.lastEvent, now)} · {project(s.cwd)}
@@ -126,6 +133,7 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
               hero
               label="Cost"
               value={usd(o.cost)}
+              href={drill("cost")}
               note={
                 <>
                   {o.estimatedCost ? `${usd(o.estimatedCost)} estimated from list prices` : "as recorded by the tools"}
@@ -133,11 +141,21 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
                 </>
               }
             />
-            <Tile label="Sessions" value={integer(o.sessions)} note={`+ ${integer(o.subagents)} subagent runs · ${integer(o.userMessages)} prompts`} />
-            <Tile label="Tokens" value={tokens(tokenTotal)} note={`${tokens(o.output)} output`} />
-            <Tile label="Model requests" value={integer(o.requests)} note={o.requests ? `${usd((o.cost ?? 0) / o.requests)} per request` : undefined} />
-            <Tile label="Tool calls" value={integer(o.toolCalls)} note={`${integer(o.errors)} errors`} />
-            <Tile label="Cache hit rate" value={contextTokens ? `${Math.round((o.cacheRead / contextTokens) * 100)}%` : "—"} note="of context tokens read from cache" />
+            <Tile label="Sessions" value={integer(o.sessions)} href={drill()} note={`+ ${integer(o.subagents)} subagent runs · ${integer(o.userMessages)} prompts`} />
+            <Tile label="Tokens" value={tokens(tokenTotal)} href={drill("tokens")} note={`${tokens(o.output)} output`} />
+            <Tile
+              label="Model requests"
+              value={integer(o.requests)}
+              href={drill("requests")}
+              note={o.requests ? `${usd((o.cost ?? 0) / o.requests)} per request` : undefined}
+            />
+            <Tile label="Tool calls" value={integer(o.toolCalls)} href={drill("tools")} note={`${integer(o.errors)} errors`} />
+            <Tile
+              label="Cache hit rate"
+              value={contextTokens ? `${Math.round((o.cacheRead / contextTokens) * 100)}%` : "—"}
+              href="#token-mix"
+              note="of context tokens read from cache"
+            />
           </div>
 
           <div className="grid-2">
@@ -159,7 +177,7 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
           </div>
 
           <div className="grid-2">
-            <section className="card">
+            <section className="card" id="token-mix">
               <div className="card-head">
                 <h2>Token mix</h2>
                 <span className="muted">{tokens(tokenTotal)} total</span>
@@ -273,7 +291,7 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
                   </thead>
                   <tbody>
                     {projects.map((p) => (
-                      <tr key={p.cwd ?? ""}>
+                      <tr key={p.cwd ?? ""} className="row-click">
                         <td>
                           <ProjectCell cwd={p.cwd} />
                         </td>
@@ -298,7 +316,7 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
                 <table>
                   <tbody>
                     {recent.map((s) => (
-                      <tr key={s.id}>
+                      <tr key={s.id} className="row-click">
                         <td>
                           <Link className="row-link" href={`/sessions/${encodeURIComponent(s.id)}`}>
                             {s.title || s.nativeId}

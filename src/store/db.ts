@@ -10,7 +10,7 @@ export type Db = DatabaseSync;
  * dropped and rebuilt from the live logs plus the raw-log archive on next sync.
  * User data (tags) lives in user.db and is never dropped.
  */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const SCHEMA = `
 CREATE TABLE meta (
@@ -90,6 +90,14 @@ CREATE TABLE usage (
   PRIMARY KEY (session_id, seq)
 );
 CREATE INDEX usage_ts ON usage(ts);
+
+CREATE TABLE auto_tags (
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  tag        TEXT NOT NULL,                     -- derived by src/core/autotags.ts
+  reason     TEXT NOT NULL,                     -- why the rule fired, shown as a tooltip
+  PRIMARY KEY (session_id, tag)
+);
+CREATE INDEX auto_tags_tag ON auto_tags(tag);
 `;
 
 /** Tables in user.db: data the user created. Never dropped by schema changes. */
@@ -146,7 +154,7 @@ function migrate(db: Db): void {
   if (version === SCHEMA_VERSION) return;
   db.exec("BEGIN");
   try {
-    for (const table of ["usage", "events", "sessions", "files", "meta"]) db.exec(`DROP TABLE IF EXISTS main.${table}`);
+    for (const table of ["auto_tags", "usage", "events", "sessions", "files", "meta"]) db.exec(`DROP TABLE IF EXISTS main.${table}`);
     db.exec(SCHEMA);
     db.exec(`PRAGMA main.user_version = ${SCHEMA_VERSION}`);
     db.exec("COMMIT");

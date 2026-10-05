@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { adapters as defaultAdapters } from "../adapters";
 import type { Adapter, Env } from "../core/adapter";
+import { deriveAutoTags } from "../core/autotags";
 import { type CostSource, costOf, loadPrices, type ModelPrice } from "../core/pricing";
 import type { AgentEvent, ParsedSession } from "../core/types";
 import type { IndexDoc, SearchIndex } from "../search/native";
@@ -247,6 +248,11 @@ export function writeSession(db: Db, filePath: string, s: ParsedSession | null, 
     insertUsage.run(id, seq, Math.round(record.ts), record.model, u.input, u.output, u.cacheRead, u.cacheWrite, u.reasoning, c.usd, c.source);
   });
 
+  // Derived from every event, so recomputed on the append path too.
+  db.prepare("DELETE FROM auto_tags WHERE session_id = ?").run(id);
+  const insertTag = db.prepare("INSERT INTO auto_tags (session_id, tag, reason) VALUES (?, ?, ?)");
+  for (const t of deriveAutoTags({ events: s.events, cwd: s.cwd, gitBranch: s.gitBranch })) insertTag.run(id, t.tag, t.reason);
+
   const deleteSessions = reindexFrom === 0 ? [...new Set([...stored.map((r) => r.id), id])] : [];
   return { deleteSessions, add: docs };
 }
@@ -294,18 +300,28 @@ export async function syncAll(db: Db, options: SyncOptions = {}): Promise<SyncRe
   );
 
   const ingest = (adapter: Adapter, filePath: string, content: string, stat: { size: number; mtimeMs: number }, missing: boolean) => {
+    let parsed = false;
     try {
       const session = adapter.parse(filePath, content);
-      transaction(db, () => {
-        changes.push(writeSession(db, filePath, session, prices));
+      parsed = true;
+      const change = transaction(db, () => {
+        const c = writeSession(db, filePath, session, prices);
         upsertFile.run(filePath, adapter.id, stat.size, stat.mtimeMs, Date.now(), missing ? 1 : 0, null);
+        return c;
       });
+      changes.push(change);
       result.parsed++;
       if (session) result.sessions++;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       result.errors.push({ path: filePath, error: message });
-      upsertFile.run(filePath, adapter.id, stat.size, stat.mtimeMs, Date.now(), missing ? 1 : 0, message);
+      // A parse error repeats until the file changes, so remember its size and skip it until then. A failed write
+      // (e.g. "database is locked" while another process syncs) is transient: size -1 makes the next sync retry it.
+      try {
+        upsertFile.run(filePath, adapter.id, parsed ? -1 : stat.size, stat.mtimeMs, Date.now(), missing ? 1 : 0, message);
+      } catch {
+        // The database is still unavailable; the file is unknown to it and gets picked up next time anyway.
+      }
     }
   };
 

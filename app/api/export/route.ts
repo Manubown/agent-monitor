@@ -1,6 +1,6 @@
 import { totalTokens, type TokenUsage } from "../../../src/core/types";
 import type { Db } from "../../../src/store/db";
-import { byModel, byProject, daily, type Filters, listSessions, type SessionSummary } from "../../../src/store/queries";
+import { byModel, byProject, daily, type Filters, isSessionSort, listSessions, type SessionSort, type SessionSummary } from "../../../src/store/queries";
 import { filtersFrom, ready, type SearchParams } from "../../lib/server";
 import { type Cell, toCsv } from "./csv";
 
@@ -11,7 +11,7 @@ const iso = (ts: number | null | undefined): string | null => (ts === null || ts
 
 /** Rows of one export plus its columns, in order; CSV and JSON share both. */
 interface View<T> {
-  rows(db: Db, f: Filters): T[];
+  rows(db: Db, f: Filters, sort: SessionSort): T[];
   columns: Record<string, (row: T) => Cell>;
 }
 
@@ -27,9 +27,9 @@ const tokenColumns = <T>(get: (row: T) => TokenUsage): View<T>["columns"] => ({
 });
 
 const VIEWS: Record<string, View<unknown>> = {
-  // Every matching top-level session, subagent work rolled in, no paging.
+  // Every matching top-level session, subagent work rolled in, no paging, in the list's order.
   sessions: view({
-    rows: (db, f) => listSessions(db, f, { limit: -1, offset: 0 }).rows,
+    rows: (db, f, sort) => listSessions(db, f, { limit: -1, offset: 0 }, sort).rows,
     columns: {
       id: (s) => s.id,
       source: (s) => s.source,
@@ -38,6 +38,7 @@ const VIEWS: Record<string, View<unknown>> = {
       gitBranch: (s) => s.gitBranch,
       models: (s) => s.models.join(" "),
       tags: (s) => s.tags.join(" "),
+      autoTags: (s) => s.autoTags.map((t) => t.tag).join(" "),
       startedAt: (s) => iso(s.startedAt),
       lastActiveAt: (s) => iso(Math.max(s.endedAt, s.total.lastActive)),
       prompts: (s) => s.userMessages,
@@ -90,7 +91,7 @@ const slug = (s: string): string =>
     .replace(/^-+|-+$/g, "")
     .slice(0, 40);
 
-/** GET /api/export?view=sessions|daily|models|projects&format=csv|json plus the page filters (range, source, project, q, tag). */
+/** GET /api/export?view=sessions|daily|models|projects&format=csv|json plus the page filters (range, source, project, q, tag) and, for sessions, sort. */
 export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const params: SearchParams = Object.fromEntries(url.searchParams);
@@ -101,7 +102,8 @@ export async function GET(request: Request): Promise<Response> {
   if (format !== "csv" && format !== "json") return new Response(`Unknown format "${format}"; use csv or json.`, { status: 400 });
 
   const f = filtersFrom(params);
-  const rows = v.rows(await ready(), f);
+  const sort = url.searchParams.get("sort");
+  const rows = v.rows(await ready(), f, isSessionSort(sort) ? sort : "recent");
   const columns = Object.entries(v.columns);
   const filename = [
     "agent-monitor",

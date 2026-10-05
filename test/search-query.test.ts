@@ -236,6 +236,15 @@ describe("search service", () => {
     expect(a1.hits[1]).toMatchObject({ kind: "tool_result", toolName: "Bash" });
   });
 
+  it("lists every hit once the search is narrowed to one session", () => {
+    const hits = [1, 2, 3, 4, 5, 6, 7].map((seq) => hit("omp:a1", seq));
+    for (const q of ["needle in:omp:a1", "needle"]) {
+      const [group] = search(db, new FakeIndex(hits), q, { perGroup: 2, now: NOW }).groups;
+      expect(group.hits.map((h) => h.seq)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+      expect(group.more).toBe(0);
+    }
+  });
+
   it("passes text and filters to the index", () => {
     const index = new FakeIndex();
     search(db, index, 'deploy -"dry run" kind:error source:omp tool:Bash after:7d sort:new', { now: NOW });

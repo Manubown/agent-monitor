@@ -96,6 +96,54 @@ describe("listSessions time filter", () => {
   });
 });
 
+describe("listSessions sort", () => {
+  const set = (id: string, cols: Record<string, number | null>) =>
+    db.prepare(`UPDATE sessions SET ${Object.keys(cols).map((c) => `${c} = ?`).join(", ")} WHERE id = ?`).run(...Object.values(cols), id);
+
+  beforeEach(() => {
+    // "big-tree" is small on its own but its subagent makes it the largest tree on every measure.
+    insertSession(db, { id: "omp:big-tree", startedAt: T, endedAt: T + H });
+    insertSession(db, { id: "omp:big-sub", parentId: "omp:big-tree", startedAt: T, endedAt: T + 9 * H });
+    insertSession(db, { id: "omp:mid", startedAt: T, endedAt: T + 4 * H });
+    insertSession(db, { id: "omp:unpriced", startedAt: T, endedAt: T + 2 * H });
+    set("omp:big-tree", { cost_usd: 1, input_tokens: 10, output_tokens: 10, requests: 1, tool_calls: 1, errors: 0, tool_errors: 1 });
+    set("omp:big-sub", { cost_usd: 9, input_tokens: 500, cache_read_tokens: 500, requests: 20, tool_calls: 30, errors: 2, tool_errors: 3 });
+    set("omp:mid", { cost_usd: 5, input_tokens: 300, output_tokens: 100, requests: 8, tool_calls: 12, errors: 1, tool_errors: 1 });
+    set("omp:unpriced", { input_tokens: 50, requests: 2, tool_calls: 2 });
+  });
+
+  const order = (sort?: Parameters<typeof listSessions>[3]) => ids(listSessions(db, {}, { limit: -1, offset: 0 }, sort).rows);
+
+  it("ranks by the totals of the whole session tree, highest first", () => {
+    for (const sort of ["cost", "tokens", "requests", "tools", "errors", "duration"] as const) {
+      expect(order(sort), sort).toEqual(["omp:big-tree", "omp:mid", "omp:unpriced"]);
+    }
+  });
+
+  it("defaults to most recently active first, counting subagent activity", () => {
+    set("omp:mid", { ended_at: T + 10 * H });
+    expect(order()).toEqual(["omp:mid", "omp:big-tree", "omp:unpriced"]);
+    expect(order("recent")).toEqual(order());
+  });
+
+  it("puts sessions without a cost after priced ones", () => {
+    set("omp:mid", { cost_usd: 0 });
+    expect(order("cost")).toEqual(["omp:big-tree", "omp:mid", "omp:unpriced"]);
+  });
+
+  it("breaks ties by last activity, then id, so pages never overlap", () => {
+    insertSession(db, { id: "omp:tie-b", startedAt: T, endedAt: T + 3 * H });
+    insertSession(db, { id: "omp:tie-a", startedAt: T, endedAt: T + 3 * H });
+    insertSession(db, { id: "omp:tie-late", startedAt: T, endedAt: T + 5 * H });
+    for (const id of ["omp:tie-a", "omp:tie-b", "omp:tie-late"]) set(id, { cost_usd: 5 });
+    const expected = ["omp:big-tree", "omp:tie-late", "omp:mid", "omp:tie-a", "omp:tie-b", "omp:unpriced"];
+    expect(order("cost")).toEqual(expected);
+    const pages = expected.map((_, offset) => ids(listSessions(db, {}, { limit: 1, offset }, "cost").rows));
+    expect(pages.flat()).toEqual(expected);
+    expect(listSessions(db, {}, { limit: 2, offset: 0 }, "cost").total).toBe(6);
+  });
+});
+
 describe("tags", () => {
   beforeEach(() => {
     insertSession(db, { id: "omp:a", startedAt: T, endedAt: T + H });
@@ -126,8 +174,8 @@ describe("tags", () => {
   it("exposes tags on summaries, alphabetically, and counts them", () => {
     expect(getSession(db, "omp:a")?.session.tags).toEqual(["auth/login", "bug"]);
     expect(allTags(db)).toEqual([
-      { tag: "bug", count: 2 },
-      { tag: "auth/login", count: 1 },
+      { tag: "bug", count: 2, auto: false },
+      { tag: "auth/login", count: 1, auto: false },
     ]);
   });
 

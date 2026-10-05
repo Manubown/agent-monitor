@@ -1,0 +1,357 @@
+/* "What it did" on the session page: time graph + node graph (app/components/graph). Tokens only. */
+
+.sa {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sa-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--hover);
+  font-size: 13px;
+}
+
+.sa-list ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 360px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+}
+
+.sa-row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 160px) minmax(0, 140px) minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  color: inherit;
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.sa-row:hover,
+.sa-row:focus-visible {
+  background: var(--hover);
+}
+
+.sa-agent,
+.sa-label,
+.sa-row .tool-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sa-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+
+/* Time graph */
+
+.tg-plot {
+  position: relative;
+}
+
+.tg-plot svg {
+  display: block;
+  overflow: visible;
+}
+
+.tg-legend-prompt {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-right: 6px;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 6px solid var(--ink);
+}
+
+.tg-grid {
+  stroke: var(--grid);
+  stroke-width: 1;
+}
+
+.tg-hatch {
+  stroke: var(--grid);
+  stroke-width: 2;
+}
+
+.tg-break-label {
+  font-size: 10px;
+}
+
+.tg-band {
+  fill: var(--hover);
+}
+
+.tg-life {
+  stroke: var(--baseline);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.tg-tree {
+  fill: none;
+  stroke: var(--baseline);
+  stroke-width: 1;
+}
+
+.tg-agent {
+  fill: var(--ink-2);
+  font-size: 12px;
+}
+
+.tg-agent-on {
+  fill: var(--ink);
+  font-weight: 600;
+}
+
+.tg-lane a:hover .tg-agent,
+.tg-lane a:focus-visible .tg-agent {
+  fill: var(--accent-ink);
+  text-decoration: underline;
+}
+
+.tg-dim {
+  opacity: 0.45;
+}
+
+.tg-spawn path {
+  fill: none;
+  stroke: var(--ink-muted);
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+}
+
+.tg-spawn circle {
+  fill: var(--ink-muted);
+}
+
+.tg-mark {
+  cursor: pointer;
+  outline: none;
+}
+
+.tg-hit {
+  fill: transparent;
+}
+
+.tg-mark:hover .tg-hit,
+.tg-mark:focus-visible .tg-hit {
+  fill: var(--hover);
+  stroke: var(--accent);
+  stroke-width: 1;
+}
+
+.tg-marker-prompt line {
+  stroke: var(--ink);
+  stroke-width: 1;
+  opacity: 0.35;
+}
+
+.tg-marker-prompt path {
+  fill: var(--ink);
+}
+
+.tg-marker-error circle {
+  fill: var(--kind-error);
+  stroke: var(--surface);
+  stroke-width: 1;
+}
+
+.tg-tip {
+  max-width: 320px;
+}
+
+.tg-tip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 300px;
+}
+
+/* Node graph */
+
+.ng-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.ng-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.ng-scroll {
+  overflow: auto;
+  border-top: 1px solid var(--border);
+}
+
+.ng-svg {
+  display: block;
+}
+
+.ng-section {
+  fill: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ng-edge path {
+  fill: none;
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+
+.ng-edge-read path {
+  stroke-dasharray: 3 3;
+}
+
+.ng-selected.ng-dim {
+  opacity: 1;
+}
+
+.ng-edge .ng-cross {
+  stroke: var(--kind-error);
+  stroke-width: 2;
+  opacity: 1;
+}
+
+.ng-hovering .ng-edge path {
+  opacity: 0.08;
+}
+
+.ng-hovering .ng-edge.ng-on path {
+  opacity: 1;
+}
+
+.ng-node {
+  cursor: pointer;
+  outline: none;
+  transition: opacity 120ms ease;
+}
+
+.ng-dim {
+  opacity: 0.3;
+}
+
+.ng-hit {
+  fill: transparent;
+}
+
+.ng-node:hover .ng-hit,
+.ng-node:focus-visible .ng-hit,
+.ng-head-row:hover .ng-hit,
+.ng-head-row:focus-visible .ng-hit {
+  fill: var(--hover);
+}
+
+.ng-node:focus-visible .ng-hit,
+.ng-head-row:focus-visible .ng-hit,
+.ng-agent:focus-visible .ng-pill {
+  stroke: var(--accent);
+  stroke-width: 1;
+}
+
+.ng-selected .ng-hit {
+  fill: var(--hover);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.ng-selected .ng-pill {
+  stroke-width: 2.5;
+}
+
+.ng-head-row {
+  cursor: pointer;
+  outline: none;
+}
+
+.ng-dir {
+  fill: var(--ink-muted);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.ng-caret {
+  fill: var(--axis-text);
+}
+
+.ng-dot {
+  fill: var(--surface);
+  stroke: var(--series-1);
+  stroke-width: 1.5;
+}
+
+.ng-mod .ng-dot {
+  fill: var(--series-2);
+  stroke: var(--series-2);
+}
+
+.ng-dot-deleted,
+.ng-mod .ng-dot-deleted {
+  fill: var(--kind-error);
+  stroke: var(--kind-error);
+}
+
+.ng-reads .ng-dot {
+  stroke-dasharray: 2 2;
+}
+
+.ng-label {
+  fill: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.ng-mod .ng-label {
+  fill: var(--ink);
+  font-weight: 600;
+}
+
+.ng-detail {
+  fill: var(--ink-muted);
+  font-size: 11px;
+}
+
+.ng-pill {
+  fill: var(--surface-raised);
+  stroke-width: 1.5;
+}
+
+.ng-agent-label {
+  fill: var(--ink);
+  font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ng-edge path,
+  .ng-node {
+    transition: none;
+  }
+}

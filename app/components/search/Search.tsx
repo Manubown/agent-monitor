@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { isEmptyQuery, OPERATORS, parseQuery, quoteValue, type Sort, tokenAt } from "../../../src/search/query";
+import { isEmptyQuery, OPERATORS, parseQuery, quoteValue, type Sort, tokenAt, tokenize } from "../../../src/search/query";
 import { ago, clock, dateTime, project } from "../../lib/format";
 import { CheatSheet, ensureVisible, Marked, Preview, QueryMirror, SearchIcon } from "./parts";
 import { type ApiContext, type ApiFacets, type ApiSearch, KIND_COLOR, KIND_LABEL, sessionHref, TARGET_EVENT } from "./shared";
@@ -333,7 +333,14 @@ function Palette({ open, onClose, mac }: { open: boolean; onClose: () => void; m
       return;
     }
     if (item.type === "more") {
-      const next = `${query.trimEnd()} in:${data?.groups[item.g].session.id} `;
+      // Narrow to this session: replace any earlier `in:` rather than stacking them, and put it first so the
+      // query still ends with the user's own word, which keeps matching as a prefix ("archive" -> "archived").
+      const rest = tokenize(query)
+        .filter((t) => t.key === "in")
+        .reduceRight((q, t) => q.slice(0, t.start) + q.slice(t.end), query)
+        .replace(/\s+/g, " ")
+        .trimStart();
+      const next = `in:${data?.groups[item.g].session.id} ${rest}`;
       setQueryAt(next, next.length);
       return;
     }
@@ -567,6 +574,11 @@ function Palette({ open, onClose, mac }: { open: boolean; onClose: () => void; m
                         {s.tags.map((t) => (
                           <span key={t} className="badge sp-tag">
                             #{t}
+                          </span>
+                        ))}
+                        {s.autoTags.map((t) => (
+                          <span key={t.tag} className="badge sp-tag tag-auto" title={`Automatic tag: ${t.reason}`}>
+                            {t.tag}
                           </span>
                         ))}
                         <span className="sp-group-time">{ago(s.endedAt)}</span>
