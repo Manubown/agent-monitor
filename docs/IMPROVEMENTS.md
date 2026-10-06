@@ -1,7 +1,7 @@
 # Improvements and ideas
 
-Backlog from the code review of 0.1.0-alpha.1 (2026-10-06). The eight most urgent findings are fixed under
-`[Unreleased]` in [CHANGELOG.md](../CHANGELOG.md); everything below is still open. File references are as of that
+Backlog from the code review of 0.1.0-alpha.1 (2026-10-06). The eight most urgent findings are fixed in 0.1.0-alpha.2
+(see [CHANGELOG.md](../CHANGELOG.md)); everything below is still open. File references are as of that
 review. Marked *unverified* where the finding was inferred rather than reproduced.
 
 ## Things to improve

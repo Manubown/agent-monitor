@@ -14,7 +14,7 @@ A local dashboard for omp, Claude Code and Codex sessions: cost, timelines, suba
 </div>
 
 > [!WARNING]
-> **Alpha (`0.1.0-alpha.1`).** It works daily on real logs, but the UI, CLI and database schema will change. The database is a cache rebuilt from your logs, so upgrades are cheap; your tags are kept. [Feedback and bug reports](#feedback) shape what comes next.
+> **Alpha (`0.1.0-alpha.2`).** It works daily on real logs, but the UI, CLI and database schema will change. The database is a cache rebuilt from your logs, so upgrades are cheap; your tags are kept. [Feedback and bug reports](#feedback) shape what comes next.
 
 All screenshots come from the bundled synthetic demo dataset (`pnpm demo`). None of it is real session data.
 

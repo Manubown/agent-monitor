@@ -1,6 +1,6 @@
 {
   "name": "agent-monitor",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "private": true,
   "description": "Local dashboard for AI coding agent sessions (omp, Claude Code, Codex): cost, timelines, subagents, file and tool maps, full-text search",
   "license": "MIT",
