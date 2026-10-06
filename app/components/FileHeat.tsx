@@ -35,7 +35,7 @@ export function FileHeat({ data, loops }: { data: SessionActivity; loops: Sessio
     const calls = [...f.actions].sort((a, b) => actions[a].ts - actions[b].ts || a - b);
     const total = reads + changes;
     return (
-      <li key={i} className={fileLoops.length ? "fh-file fh-hot" : "fh-file"}>
+      <li key={f.path} className={fileLoops.length ? "fh-file fh-hot" : "fh-file"}>
         <details>
           <summary className="fh-row">
             <span className="fh-path mono" title={f.path}>

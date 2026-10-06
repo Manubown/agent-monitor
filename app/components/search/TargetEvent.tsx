@@ -2,6 +2,7 @@
 
 import { usePathname } from "next/navigation";
 import { useEffect } from "react";
+import { safeDecode } from "../../lib/live";
 import { TARGET_EVENT } from "./shared";
 import "../../search.css";
 
@@ -26,13 +27,13 @@ export function TargetEvent() {
       clearTimeout(timer);
       const at = href.indexOf("#");
       const hash = at >= 0 ? href.slice(at) : "";
-      const path = at > 0 ? decodeURIComponent(href.slice(0, at).split("?")[0]) : null;
+      const path = at > 0 ? safeDecode(href.slice(0, at).split("?")[0]) : null;
       if (!hash.startsWith("#e-")) return;
-      const id = decodeURIComponent(hash.slice(1));
+      const id = safeDecode(hash.slice(1));
       const deadline = Date.now() + WAIT_MS;
       const attempt = () => {
         if (cancelled) return;
-        const arrived = !path || decodeURIComponent(window.location.pathname) === path;
+        const arrived = !path || safeDecode(window.location.pathname) === path;
         const el = arrived ? document.getElementById(id) : null;
         if (!el) {
           if (Date.now() < deadline) timer = window.setTimeout(attempt, 50);

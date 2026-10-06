@@ -6,9 +6,11 @@ import { FilterBar } from "../components/FilterBar";
 import { StackedBarChart } from "../components/StackedBarChart";
 import { Empty, PulseDot, Tile } from "../components/ui";
 import { dateTime, duration, integer, project, tokens, usd } from "../lib/format";
+import { oneOfList } from "../lib/params";
 import { filtersFrom, RANGES, ready, type SearchParams } from "../lib/server";
 
 const DEFAULT_RANGE = "7d";
+const RANGE_IDS = RANGES.map((r) => r.id);
 /** Rows this far before the range are read so the first block in range starts where it really started. */
 const LOOKBEHIND_MS = 24 * 3600_000;
 
@@ -92,7 +94,8 @@ function ActiveBlock({ block, now }: { block: UsageBlock; now: number }) {
 
 export default async function UsagePage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const params = await searchParams;
-  const f = filtersFrom({ ...params, range: params.range ?? DEFAULT_RANGE });
+  // An unknown or empty range falls back to this page's default, not the global one.
+  const f = filtersFrom({ ...params, range: oneOfList(RANGE_IDS, params.range) ?? DEFAULT_RANGE });
   const db = await ready();
   const now = Date.now();
   const rows = claudeUsage(db, { ...f, from: f.from === undefined ? undefined : f.from - LOOKBEHIND_MS });

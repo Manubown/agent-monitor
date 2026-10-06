@@ -8,7 +8,7 @@ import { type CostSource, costOf, loadPrices, type ModelPrice } from "../core/pr
 import type { AgentEvent, ParsedSession, TokenUsage, UsageRecord } from "../core/types";
 import type { IndexDoc, SearchIndex } from "../search/native";
 import { bumpGeneration, type Db, defaultArchiveDir, generation, transaction } from "../store/db";
-import { listArchive, readArchive, writeArchive } from "./archive";
+import { type ArchiveState, listArchive, readArchive, writeArchive } from "./archive";
 
 /** Per-event text limits keep the database small; the full transcript stays in the log and its archived copy. */
 const MAX_TEXT = 20_000;
@@ -21,6 +21,16 @@ const REBUILD_BATCH = 5_000;
 const ARCHIVE_ERROR = "archive: ";
 /** A pending archive copy is retried at most this often, since each retry re-reads the whole log. */
 const ARCHIVE_RETRY_MS = 60_000;
+/** files.error prefix for an archived-only log whose .gz could not be read: skipped until the .gz changes. */
+const ARCHIVE_READ_ERROR = "unreadable archive copy: ";
+
+/** Databases whose archive this process has listed already; later syncs only list it when asked to (see SyncOptions.archive). */
+const archiveListed = new WeakMap<Db, true>();
+/**
+ * Databases whose committed writes may be missing from the search index because recording a new generation failed
+ * (the database became unavailable mid-sync): the next sync that reaches the index rebuilds it.
+ */
+const indexBehind = new WeakSet<Db>();
 
 export interface SyncOptions {
   env?: Env;
@@ -32,6 +42,11 @@ export interface SyncOptions {
   archiveDir?: string;
   /** Search index to keep in step with the database. */
   index?: SearchIndex;
+  /**
+   * List the archive for logs the tools deleted. Defaults to the first sync of a database in this process, `full`
+   * syncs and syncs that start with no known files (a fresh or rebuilt database); in between, its copies are known.
+   */
+  archive?: boolean;
 }
 
 export interface SyncResult {
@@ -39,6 +54,13 @@ export interface SyncResult {
   parsed: number;
   /** Sessions written (new, appended to or replaced). */
   sessions: number;
+  /**
+   * Every session this sync wrote, replaced or deleted (also those whose usage totals lost a request copy), with its
+   * directory after the write, or the one it had when it was deleted; each (id, cwd) pair once. A session whose
+   * directory changed is listed with its old directory too, and a subagent that was deleted or moved to another
+   * parent lists its old parent (with that parent's directory), whose page showed it.
+   */
+  changed: { id: string; cwd: string | null }[];
   errors: { path: string; error: string }[];
   /** Database generation after this sync. */
   generation: number;
@@ -47,12 +69,12 @@ export interface SyncResult {
   durationMs: number;
 }
 
-/**
- * Roots for an adapter. AGENT_MONITOR_<ID>_DIRS (path-delimiter separated)
- * overrides the adapter's defaults, e.g. AGENT_MONITOR_CLAUDE_CODE_DIRS.
- */
+/** Environment variable overriding an adapter's roots, e.g. AGENT_MONITOR_CLAUDE_CODE_DIRS. */
+export const rootsEnvVar = (adapterId: string): string => `AGENT_MONITOR_${adapterId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_DIRS`;
+
+/** Roots for an adapter: its `rootsEnvVar` (path-delimiter separated) overrides the adapter's defaults. */
 export function rootsFor(adapter: Adapter, env: Env): string[] {
-  const override = env[`AGENT_MONITOR_${adapter.id.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_DIRS`];
+  const override = env[rootsEnvVar(adapter.id)];
   return override ? override.split(path.delimiter).filter(Boolean) : adapter.roots(env);
 }
 
@@ -74,6 +96,94 @@ const clip = (text: string | undefined, max: number): string | null => {
   if (text === undefined) return null;
   return text.length > max ? `${text.slice(0, max)}\n… [truncated ${text.length - max} chars]` : text;
 };
+
+/**
+ * Lines of a tool input that name the files it touches (see `fileOps` in src/core/activity.ts): apply_patch
+ * headers, and omp edit's `[path#TAG]` headers with their REM / MV ops. Clipping keeps them past the cut.
+ */
+const FILE_LINE = /^(?:\*\*\* (?:Begin Patch|End Patch|(?:Add|Update|Delete) File: |Move to: )|\[[^\n]+#[0-9A-Fa-f]{4}\][ \t\r]*$|REM[ \t\r]*$|MV )[^\n]*/gm;
+
+/** A string too long to store whole, with the offsets of its FILE_LINE lines. */
+interface LongText {
+  text: string;
+  lines: { at: number; line: string }[];
+}
+
+const longText = (text: string): LongText => ({ text, lines: [...text.matchAll(FILE_LINE)].map((m) => ({ at: m.index, line: m[0] })) });
+
+/**
+ * The first `keep` characters of a long text, then the FILE_LINE lines after them (at most `max` characters of
+ * them) and the usual truncation marker. A cut through such a line moves to its start, so no half path survives.
+ */
+function shorten(long: LongText, keep: number, max: number): string {
+  const { text, lines } = long;
+  const split = lines.find((l) => l.at < keep && keep < l.at + l.line.length);
+  const cut = split ? split.at : keep;
+  const kept: string[] = [];
+  let budget = max;
+  for (const l of lines) {
+    if (l.at < cut || l.line.length + 1 > budget) continue;
+    kept.push(l.line);
+    budget -= l.line.length + 1;
+  }
+  const tail = kept.join("\n");
+  return `${text.slice(0, cut)}\n${tail ? `${tail}\n` : ""}… [truncated ${text.length - cut - tail.length} chars]`;
+}
+
+/** Strings this short are never shortened inside JSON tool input: paths, commands, ids. */
+const MIN_KEEP = 200;
+
+/** The rendering for the largest `keep` in [lo, hi] that fits in `max` characters (for `lo` if none does); length grows with `keep`. */
+function fit(render: (keep: number) => string, lo: number, hi: number, max: number): string {
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (render(mid).length <= max) lo = mid;
+    else hi = mid - 1;
+  }
+  return render(lo);
+}
+
+/**
+ * Tool input clipped to about `max` characters. JSON input (the usual case) stays valid JSON with every key: each
+ * string value longer than a common threshold is shortened to it, keeping the lines that name files, and the
+ * threshold is the largest that fits. Other input, or JSON that cannot be shrunk that way, is clipped as text.
+ */
+export function clipToolInput(input: string | undefined, max: number): string | null {
+  if (input === undefined) return null;
+  if (input.length <= max) return input;
+  const asText = () => {
+    const long = longText(input);
+    return fit((keep) => shorten(long, keep, max), 0, max, max);
+  };
+  let value: unknown;
+  try {
+    value = JSON.parse(input);
+  } catch {
+    return asText();
+  }
+  const longs = new Map<string, LongText>();
+  let longest = 0;
+  const collect = (v: unknown): void => {
+    if (typeof v === "string") {
+      if (v.length > MIN_KEEP && !longs.has(v)) longs.set(v, longText(v));
+      longest = Math.max(longest, v.length);
+    } else if (Array.isArray(v)) v.forEach(collect);
+    else if (v && typeof v === "object") Object.values(v).forEach(collect);
+  };
+  collect(value);
+  const render = (keep: number): string => {
+    const walk = (v: unknown): unknown => {
+      if (typeof v === "string") return v.length > keep && longs.has(v) ? shorten(longs.get(v)!, keep, max) : v;
+      if (Array.isArray(v)) return v.map(walk);
+      if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+      return v;
+    };
+    return JSON.stringify(walk(value));
+  };
+  const out = fit(render, MIN_KEEP, longest, max);
+  // Many keys or numbers rather than a few long strings: bound the size, at the cost of valid JSON.
+  return out.length <= 2 * max ? out : asText();
+}
 
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -139,10 +249,10 @@ const ranksBefore = (a: Rank, b: Rank): boolean => (a[0] !== b[0] ? a[0] < b[0] 
  * can turn up in several sessions. It is counted once, in the session that made
  * it: earliest request, then earliest session start, then lowest id. Returns the
  * records this session keeps; copies it outranks are removed from the other
- * sessions, whose totals are recomputed. Sessions stored from the same file are
- * about to be replaced and do not compete.
+ * sessions (`losers`), whose totals are recomputed. Sessions stored from the
+ * same file are about to be replaced and do not compete.
  */
-function keepOwnRequests(db: Db, filePath: string, id: string, s: ParsedSession): UsageRecord[] {
+function keepOwnRequests(db: Db, filePath: string, id: string, s: ParsedSession): { kept: UsageRecord[]; losers: string[] } {
   const findCopies = db.prepare(
     `SELECT u.session_id AS sessionId, u.seq, u.ts, s.started_at AS startedAt
      FROM usage u JOIN sessions s ON s.id = u.session_id
@@ -163,7 +273,7 @@ function keepOwnRequests(db: Db, filePath: string, id: string, s: ParsedSession)
     return true;
   });
   for (const loser of losers) recomputeUsage(db, loser);
-  return kept;
+  return { kept, losers: [...losers] };
 }
 
 /**
@@ -189,6 +299,8 @@ export interface SessionChange {
   /** Sessions whose index documents must be dropped first. */
   deleteSessions: string[];
   add: IndexDoc[];
+  /** Sessions written, deleted or whose usage totals changed, with their directory (as deleted, for those). */
+  touched: { id: string; cwd: string | null }[];
 }
 
 const eventDoc = (sessionId: string, source: string, seq: number, e: { ts: number; kind: string; text: string | null; toolName: string | null; toolInput: string | null }): IndexDoc => ({
@@ -218,20 +330,62 @@ interface StoredSession {
   title: string | null;
   cwd: string | null;
   git_branch: string | null;
+  parent_id: string | null;
+}
+
+const STORED_COLUMNS = "id, event_count, events_hash, title, cwd, git_branch, parent_id";
+
+/** Whether `parentId`, or a session above it (at most 64 levels up, as stored), is `id`. */
+function onParentChain(db: Db, parentId: string, id: string): boolean {
+  const hit = db
+    .prepare(
+      `WITH RECURSIVE up(id, depth) AS (
+         SELECT ?, 0
+         UNION ALL SELECT s.parent_id, up.depth + 1 FROM sessions s JOIN up ON s.id = up.id
+         WHERE up.depth < 64 AND up.id <> ? AND s.parent_id IS NOT NULL)
+       SELECT 1 FROM up WHERE id = ? LIMIT 1`,
+    )
+    .get(parentId, id, id);
+  return hit !== undefined;
+}
+
+/**
+ * Pages a write or delete of `old` (a row as stored before it) may have left stale besides the session's own: its old
+ * directory when it moved or went away, and its old parent's page (whose tree held it) when it was re-parented or
+ * deleted. The server looks ancestors up after the write, so it only finds the new ones itself.
+ */
+function staleOf(db: Db, old: StoredSession, now: { cwd: string | null; parentId: string | null } | null): { id: string; cwd: string | null }[] {
+  const out: { id: string; cwd: string | null }[] = [];
+  if (!now || now.cwd !== old.cwd) out.push({ id: old.id, cwd: old.cwd });
+  if (old.parent_id !== null && (!now || now.parentId !== old.parent_id)) {
+    const parent = db.prepare("SELECT cwd FROM sessions WHERE id = ?").get(old.parent_id) as { cwd: string | null } | undefined;
+    if (parent) out.push({ id: old.parent_id, cwd: parent.cwd });
+  }
+  return out;
 }
 
 /** Store one log file's fresh parse: append new events when only the tail changed, otherwise replace the session. */
 export function writeSession(db: Db, filePath: string, s: ParsedSession | null, prices: Record<string, ModelPrice>): SessionChange {
-  const stored = db
-    .prepare("SELECT id, event_count, events_hash, title, cwd, git_branch FROM sessions WHERE file_path = ?")
-    .all(filePath) as unknown as StoredSession[];
+  const stored = db.prepare(`SELECT ${STORED_COLUMNS} FROM sessions WHERE file_path = ?`).all(filePath) as unknown as StoredSession[];
   if (!s) {
+    const stale = stored.flatMap((r) => staleOf(db, r, null));
     db.prepare("DELETE FROM sessions WHERE file_path = ?").run(filePath);
-    return { deleteSessions: stored.map((r) => r.id), add: [] };
+    return { deleteSessions: stored.map((r) => r.id), add: [], touched: stale };
   }
   const id = `${s.source}:${s.nativeId}`;
+  // The same session as another file stored it (a tool rewrote or moved its log): replaced below.
+  const elsewhere = stored.some((r) => r.id === id)
+    ? undefined
+    : (db.prepare(`SELECT ${STORED_COLUMNS} FROM sessions WHERE id = ?`).get(id) as unknown as StoredSession | undefined);
+  let parentId = s.parentNativeId ? `${s.source}:${s.parentNativeId}` : null;
+  // A malformed log can name a descendant (or the session itself) as parent: a -> b -> a. A cycle has no top-level
+  // session, so the list queries (which start at the roots) would never show its members. Break it here: the session
+  // written last whose parent chain leads back to it becomes a root. Its stored parent is re-checked on every write.
+  if (parentId !== null && onParentChain(db, parentId, id)) parentId = null;
 
-  const kept = keepOwnRequests(db, filePath, id, s);
+  const { kept, losers } = keepOwnRequests(db, filePath, id, s);
+  const cwdOf = db.prepare("SELECT cwd FROM sessions WHERE id = ?");
+  const touched = losers.map((loser) => ({ id: loser, cwd: (cwdOf.get(loser) as { cwd: string | null } | undefined)?.cwd ?? null }));
   const usageRows = kept.map((record) => ({ record, c: costOf(record, prices) }));
   const { totals, cost, costSource, models } = summarizeUsage(usageRows.map(({ record, c }) => ({ ...record.usage, model: record.model, usd: c.usd, source: c.source })));
   const count = (pred: (e: AgentEvent) => boolean) => s.events.filter(pred).length;
@@ -273,7 +427,7 @@ export function writeSession(db: Db, filePath: string, s: ParsedSession | null, 
     id,
     s.source,
     s.nativeId,
-    s.parentNativeId ? `${s.source}:${s.parentNativeId}` : null,
+    parentId,
     s.dispatchIndex ?? null,
     filePath,
     row.title,
@@ -309,15 +463,18 @@ export function writeSession(db: Db, filePath: string, s: ParsedSession | null, 
   const metaChanged = !previous || previous.title !== row.title || previous.cwd !== row.cwd || previous.git_branch !== row.gitBranch;
   const reindexFrom = appendFrom === null || metaChanged ? 0 : appendFrom;
   if (reindexFrom === 0) docs.push(sessionDoc(id, { source: s.source, startedAt, nativeId: s.nativeId, ...row }));
-  s.events.forEach((e, seq) => {
+  const insertFrom = appendFrom ?? 0;
+  // Events neither inserted nor re-indexed are skipped before clipping (which parses and re-renders big tool input).
+  for (let seq = Math.min(insertFrom, reindexFrom); seq < s.events.length; seq++) {
+    const e = s.events[seq];
     const ts = Math.round(e.ts);
     const text = clip(e.text, e.kind === "tool_result" ? MAX_TOOL_TEXT : MAX_TEXT);
-    const toolInput = clip(e.toolInput, MAX_TOOL_TEXT);
-    if (appendFrom === null || seq >= appendFrom) {
+    const toolInput = clipToolInput(e.toolInput, MAX_TOOL_TEXT);
+    if (seq >= insertFrom) {
       insertEvent.run(id, seq, ts, e.kind, text, e.toolName ?? null, e.toolCallId ?? null, toolInput, e.isError ? 1 : 0, e.model ?? null);
     }
     if (seq >= reindexFrom) docs.push(eventDoc(id, s.source, seq, { ts, kind: e.kind, text, toolName: e.toolName ?? null, toolInput }));
-  });
+  }
 
   const insertUsage = db.prepare(
     `INSERT INTO usage (session_id, seq, ts, model, input, output, cache_read, cache_write, reasoning, cost_usd, cost_source, request_id)
@@ -334,7 +491,12 @@ export function writeSession(db: Db, filePath: string, s: ParsedSession | null, 
   for (const t of deriveAutoTags({ events: s.events, cwd: s.cwd, gitBranch: s.gitBranch })) insertTag.run(id, t.tag, t.reason);
 
   const deleteSessions = reindexFrom === 0 ? [...new Set([...stored.map((r) => r.id), id])] : [];
-  return { deleteSessions, add: docs };
+  // Other sessions this file held were dropped above (replace path only; appending means it held just this one).
+  // Rows read before the write, so their old directory and parent are still known (the parent's own row is not
+  // touched by this write, so looking up its directory now is fine).
+  for (const r of elsewhere ? [...stored, elsewhere] : stored) touched.push(...staleOf(db, r, r.id === id ? { cwd: row.cwd, parentId } : null));
+  touched.push({ id, cwd: row.cwd });
+  return { deleteSessions, add: docs, touched };
 }
 
 /** Rebuild the whole search index from the database, committing in batches; the last commit carries `gen`. */
@@ -358,53 +520,109 @@ function rebuildIndex(db: Db, index: SearchIndex, gen: number): void {
   flush(true);
 }
 
-/** Scan every adapter's roots and the archive, (re)ingest new or changed logs, and bring the search index along. */
+interface FileRow {
+  path: string;
+  size: number;
+  mtime_ms: number;
+  synced_at: number;
+  error: string | null;
+  archived_size: number | null;
+  archived_hash: string | null;
+  archived_gz_size: number | null;
+}
+
+const FILE_COLUMNS = "path, size, mtime_ms, synced_at, error, archived_size, archived_hash, archived_gz_size";
+
+/** What the file's archive copy held after our last write to it, if known. */
+const archivedOf = (row: FileRow | undefined): ArchiveState | null =>
+  row && row.archived_size !== null && row.archived_hash !== null && row.archived_gz_size !== null
+    ? { size: row.archived_size, hash: row.archived_hash, gzSize: row.archived_gz_size }
+    : null;
+
+/** The log a session was stored from, and how much of the session it held. */
+interface StoredCopy {
+  path: string;
+  events: number;
+  endedAt: number;
+}
+
+/**
+ * Of two archived-only logs of one session, whether the stored one stays over the one just read: more events
+ * first, then the later end, then the path that sorts first. Either read order ends with the same copy.
+ */
+const keepsArchivedCopy = (stored: StoredCopy, candidate: StoredCopy): boolean =>
+  stored.events !== candidate.events
+    ? stored.events > candidate.events
+    : stored.endedAt !== candidate.endedAt
+      ? stored.endedAt > candidate.endedAt
+      : stored.path < candidate.path;
+
+/** Scan every adapter's roots (and the archive when it can hold something new), (re)ingest new or changed logs, and bring the search index along. */
 export async function syncAll(db: Db, options: SyncOptions = {}): Promise<SyncResult> {
   const started = Date.now();
   const env = options.env ?? process.env;
   const prices = options.prices ?? loadPrices(env);
   const archiveDir = options.archiveDir ?? defaultArchiveDir(env);
   const adapters = options.adapters ?? defaultAdapters;
-  const result: SyncResult = { scanned: 0, parsed: 0, sessions: 0, errors: [], generation: 0, durationMs: 0 };
-  const known = new Map(
-    (db.prepare("SELECT path, size, mtime_ms, synced_at, error FROM files").all() as { path: string; size: number; mtime_ms: number; synced_at: number; error: string | null }[]).map(
-      (r) => [r.path, r],
-    ),
-  );
+  const result: SyncResult = { scanned: 0, parsed: 0, sessions: 0, changed: [], errors: [], generation: 0, durationMs: 0 };
+  const known = new Map((db.prepare(`SELECT ${FILE_COLUMNS} FROM files`).all() as unknown as FileRow[]).map((r) => [r.path, r]));
+  const listArchived = options.archive ?? (options.full === true || known.size === 0 || !archiveListed.has(db));
   const seen = new Set<string>();
   /** Logs found in the adapters' roots during this sync, as opposed to copies read back from the archive. */
   const live = new Set<string>();
   const changes: SessionChange[] = [];
   const upsertFile = db.prepare(
-    `INSERT INTO files (path, adapter, size, mtime_ms, synced_at, missing, error) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO files (path, adapter, size, mtime_ms, synced_at, missing, error, archived_size, archived_hash, archived_gz_size)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(path) DO UPDATE SET adapter = excluded.adapter, size = excluded.size, mtime_ms = excluded.mtime_ms,
-       synced_at = excluded.synced_at, missing = excluded.missing, error = excluded.error`,
+       synced_at = excluded.synced_at, missing = excluded.missing, error = excluded.error, archived_size = excluded.archived_size,
+       archived_hash = excluded.archived_hash, archived_gz_size = excluded.archived_gz_size`,
   );
-  const sessionFile = db.prepare("SELECT file_path AS path FROM sessions WHERE id = ?");
+  const writeFile = (adapterId: string, filePath: string, size: number, mtimeMs: number, missing: boolean, error: string | null, archived: ArchiveState | null) =>
+    upsertFile.run(filePath, adapterId, size, mtimeMs, Date.now(), missing ? 1 : 0, error, archived?.size ?? null, archived?.hash ?? null, archived?.gzSize ?? null);
+  const sessionFile = db.prepare("SELECT file_path AS path, event_count AS events, ended_at AS endedAt FROM sessions WHERE id = ?");
 
   /** Report a failed file and remember it: its real size skips it until it changes, size -1 retries it next sync. */
-  const recordFailure = (adapterId: string, filePath: string, size: number, mtimeMs: number, missing: boolean, message: string) => {
+  const recordFailure = (adapterId: string, filePath: string, size: number, mtimeMs: number, missing: boolean, message: string, archived: ArchiveState | null) => {
     result.errors.push({ path: filePath, error: message });
     try {
-      upsertFile.run(filePath, adapterId, size, mtimeMs, Date.now(), missing ? 1 : 0, message);
+      writeFile(adapterId, filePath, size, mtimeMs, missing, message, archived);
     } catch {
       // The database is still unavailable; the file is unknown to it and gets picked up next time anyway.
     }
   };
 
-  /** Parse and store one log. `archiveError` stays on the file's row when the log itself was stored. */
-  const ingest = (adapter: Adapter, filePath: string, raw: Buffer, stat: { size: number; mtimeMs: number }, missing: boolean, archiveError: string | null = null) => {
+  /**
+   * Parse and store one log. `archiveError` stays on the file's row when the log itself was stored; `archived` is
+   * what its archive copy holds now (null: unknown, so the next copy is a rewrite). Returns false when storing it
+   * failed transiently (it is retried next sync), true otherwise.
+   */
+  const ingest = (
+    adapter: Adapter,
+    filePath: string,
+    raw: Buffer,
+    stat: { size: number; mtimeMs: number },
+    missing: boolean,
+    archiveError: string | null,
+    archived: ArchiveState | null,
+  ): boolean => {
     let parsed = false;
     try {
       const session = adapter.parse(filePath, decode(raw));
       parsed = true;
+      const holder = missing && session ? (sessionFile.get(`${session.source}:${session.nativeId}`) as StoredCopy | undefined) : undefined;
       // A tool that moved its log (Codex: sessions/ to archived_sessions/) left the old path in the archive. After a
       // rebuild or with --full, that stale copy would replace the session the live file holds: the live file wins.
-      const holder = missing && session ? (sessionFile.get(`${session.source}:${session.nativeId}`) as { path: string } | undefined)?.path : undefined;
-      const superseded = holder !== undefined && holder !== filePath && live.has(holder);
+      // Between two archived-only copies the outcome must not depend on read order (see `keepsArchivedCopy`).
+      const superseded =
+        session !== null &&
+        holder !== undefined &&
+        holder.path !== filePath &&
+        (live.has(holder.path) ||
+          keepsArchivedCopy(holder, { path: filePath, events: session.events.length, endedAt: Math.round(Math.max(session.endedAt, session.startedAt)) }));
       const change = transaction(db, () => {
         const c = superseded ? undefined : writeSession(db, filePath, session, prices);
-        upsertFile.run(filePath, adapter.id, stat.size, stat.mtimeMs, Date.now(), missing ? 1 : 0, archiveError);
+        writeFile(adapter.id, filePath, stat.size, stat.mtimeMs, missing, archiveError, archived);
         return c;
       });
       result.parsed++;
@@ -412,25 +630,26 @@ export async function syncAll(db: Db, options: SyncOptions = {}): Promise<SyncRe
         changes.push(change);
         if (session) result.sessions++;
       }
+      return true;
     } catch (error) {
       // A parse error repeats until the file changes, so remember its size and skip it until then. A failed write
       // (e.g. "database is locked" while another process syncs) is transient: size -1 makes the next sync retry it.
-      recordFailure(adapter.id, filePath, parsed ? -1 : stat.size, stat.mtimeMs, missing, errorMessage(error));
+      recordFailure(adapter.id, filePath, parsed ? -1 : stat.size, stat.mtimeMs, missing, errorMessage(error), archived);
+      return !parsed;
     }
   };
 
-  /** Copy a log into the archive; returns the error to keep on the file's row, or null. */
-  const archive = async (adapterId: string, filePath: string, raw: Buffer): Promise<string | null> => {
+  /** Copy a log into the archive (appending when only its end is new); `error` is kept on the file's row. */
+  const archive = async (adapterId: string, filePath: string, raw: Buffer, previous: FileRow | undefined): Promise<{ error: string | null; archived: ArchiveState | null }> => {
     try {
-      await writeArchive(archiveDir, adapterId, filePath, raw);
-      return null;
+      return { error: null, archived: await writeArchive(archiveDir, adapterId, filePath, raw, archivedOf(previous)) };
     } catch (error) {
       const message = `${ARCHIVE_ERROR}${errorMessage(error)}`;
       result.errors.push({ path: filePath, error: message });
-      return message;
+      return { error: message, archived: null };
     }
   };
-  const setArchiveError = db.prepare("UPDATE files SET error = ?, synced_at = ? WHERE path = ?");
+  const setArchived = db.prepare("UPDATE files SET error = ?, synced_at = ?, archived_size = ?, archived_hash = ?, archived_gz_size = ? WHERE path = ?");
   // The first failed retry of a pending archive copy ends the retries for this sync: the cause (a full disk, a
   // read-only archive) is usually shared. Its new attempt time lets the next sync try the next pending copy first.
   let retryArchive = true;
@@ -460,49 +679,105 @@ export async function syncAll(db: Db, options: SyncOptions = {}): Promise<SyncRe
           const code = (error as NodeJS.ErrnoException).code;
           if (code === "ENOENT") continue; // Deleted between stat and read.
           // Over 2 GiB stays unreadable until the file changes; anything else (e.g. a lock) is retried next sync.
-          recordFailure(adapter.id, filePath, code === "ERR_FS_FILE_TOO_LARGE" ? stat.size : -1, stat.mtimeMs, false, errorMessage(error));
+          recordFailure(adapter.id, filePath, code === "ERR_FS_FILE_TOO_LARGE" ? stat.size : -1, stat.mtimeMs, false, errorMessage(error), archivedOf(previous));
           continue;
         }
-        const archiveError = await archive(adapter.id, filePath, raw);
+        const copy = await archive(adapter.id, filePath, raw, previous);
         if (unchanged) {
-          setArchiveError.run(archiveError, Date.now(), filePath);
-          retryArchive = archiveError === null;
-        } else ingest(adapter, filePath, raw, stat, false, archiveError);
+          try {
+            setArchived.run(copy.error, Date.now(), copy.archived?.size ?? null, copy.archived?.hash ?? null, copy.archived?.gzSize ?? null, filePath);
+            retryArchive = copy.error === null;
+          } catch (error) {
+            // The database is unavailable: the row still says the copy is pending, so it is retried later.
+            result.errors.push({ path: filePath, error: errorMessage(error) });
+            retryArchive = false;
+          }
+        } else ingest(adapter, filePath, raw, stat, false, copy.error, copy.archived);
       }
     }
   }
 
   // Logs the tools have deleted: history is kept. After a rebuild (or with --full) they are re-parsed from the archive.
+  // Listing it walks every copy ever made, so only when that can find something new (see SyncOptions.archive).
   const byId = new Map(adapters.map((a) => [a.id, a]));
-  for await (const entry of listArchive(archiveDir)) {
+  /** An archived-only log could not be stored for a passing reason: the next sync lists the archive again. */
+  let archivePending = false;
+  for await (const entry of listArchived ? listArchive(archiveDir) : []) {
     const adapter = byId.get(entry.adapterId);
     if (!adapter || seen.has(entry.original) || !adapter.match(entry.original)) continue;
-    if (!options.full && known.has(entry.original)) continue; // Already ingested; flagged missing below.
+    const previous = known.get(entry.original);
+    const unreadable = previous?.error?.startsWith(ARCHIVE_READ_ERROR) === true;
+    // Size -1: storing it failed transiently (see `recordFailure`), so it is retried like an unreadable copy.
+    const failed = previous?.size === -1;
+    if (!options.full && previous && !unreadable && !failed) continue; // Already ingested; flagged missing below.
     seen.add(entry.original);
-    let raw: Buffer;
-    let mtimeMs: number;
+    let gz;
     try {
-      mtimeMs = (await fs.stat(entry.file)).mtimeMs;
-      raw = await readArchive(entry.file);
+      gz = await fs.stat(entry.file);
     } catch (error) {
       result.errors.push({ path: entry.file, error: errorMessage(error) });
+      archivePending = true;
       continue;
     }
-    ingest(adapter, entry.original, raw, { size: raw.length, mtimeMs }, true);
+    // A copy that could not be read is only tried again once it changed.
+    if (unreadable && previous?.size === gz.size && previous.mtime_ms === gz.mtimeMs) continue;
+    let raw: Buffer;
+    try {
+      raw = await readArchive(entry.file);
+    } catch (error) {
+      const message = `${ARCHIVE_READ_ERROR}${errorMessage(error)}`;
+      result.errors.push({ path: entry.file, error: message });
+      try {
+        writeFile(adapter.id, entry.original, gz.size, gz.mtimeMs, true, message, null);
+      } catch {
+        // The database is unavailable; the copy is reported again next time.
+      }
+      continue;
+    }
+    if (!ingest(adapter, entry.original, raw, { size: raw.length, mtimeMs: gz.mtimeMs }, true, null, unreadable ? null : archivedOf(previous))) {
+      archivePending = true;
+    }
   }
-  const markMissing = db.prepare("UPDATE files SET missing = 1 WHERE path = ?");
-  for (const filePath of known.keys()) if (!seen.has(filePath)) markMissing.run(filePath);
+  if (listArchived && !archivePending) archiveListed.set(db, true);
+  try {
+    const markMissing = db.prepare("UPDATE files SET missing = 1 WHERE path = ?");
+    for (const filePath of known.keys()) if (!seen.has(filePath)) markMissing.run(filePath);
+  } catch (error) {
+    // Only the "missing" flags are behind; every sync sets them again.
+    result.errors.push({ path: "", error: `could not flag deleted logs: ${errorMessage(error)}` });
+  }
+
+  const changed = new Map<string, { id: string; cwd: string | null }>();
+  for (const c of changes) for (const t of c.touched) changed.set(JSON.stringify([t.id, t.cwd]), t);
+  result.changed = [...changed.values()];
 
   const indexedBefore = options.index?.generation() ?? null;
-  const before = generation(db);
+  /** Throws on, after marking the index behind when the committed writes got no generation to show for them. */
+  const bump = (): number => {
+    try {
+      return bumpGeneration(db);
+    } catch (error) {
+      indexBehind.add(db);
+      throw error;
+    }
+  };
+  let before: number;
+  try {
+    before = generation(db);
+  } catch (error) {
+    if (changes.length) indexBehind.add(db);
+    throw error;
+  }
   // Without an index (e.g. tests) the bump alone makes the next indexing sync rebuild.
-  result.generation = changes.length ? bumpGeneration(db) : before;
+  result.generation = changes.length ? bump() : before;
 
   if (options.index) {
     try {
       // Incremental only when the index was exactly at our starting point and no other process synced in between.
-      if (indexedBefore !== before || result.generation > before + 1) rebuildIndex(db, options.index, result.generation);
-      else if (changes.length) {
+      if (indexBehind.has(db) || indexedBefore !== before || result.generation > before + 1) {
+        rebuildIndex(db, options.index, result.generation);
+        indexBehind.delete(db);
+      } else if (changes.length) {
         options.index.apply({
           deleteSessions: [...new Set(changes.flatMap((c) => c.deleteSessions))],
           add: changes.flatMap((c) => c.add),
@@ -513,7 +788,7 @@ export async function syncAll(db: Db, options: SyncOptions = {}): Promise<SyncRe
       // Typically LOCKED: another process is writing the index. Moving the database past any generation that
       // process may commit forces a full rebuild on the next sync instead of silently missing these changes.
       result.indexError = errorMessage(error);
-      result.generation = bumpGeneration(db);
+      result.generation = bump();
     }
   }
 

@@ -3,6 +3,7 @@ import { IDLE_GAP_MS } from "../core/autotags";
 import { COMPACTION_TEXT, type Compaction, detectCompactions } from "../core/compaction";
 import { type ActionCategory, categorize, clip } from "./activity";
 import type { Db } from "./db";
+import { SUBTREE } from "./tree";
 
 /**
  * Per-prompt and per-request views of a session tree (the session plus every
@@ -10,9 +11,6 @@ import type { Db } from "./db";
  * next; everything in the tree is attributed to turns by timestamp, so a
  * subagent's work lands in the turn that was running when it happened.
  */
-
-const TREE = `WITH RECURSIVE tree(id, depth) AS (
-  SELECT ?, 0 UNION ALL SELECT c.id, tree.depth + 1 FROM sessions c JOIN tree ON c.parent_id = tree.id WHERE tree.depth < 64)`;
 
 interface AgentRow {
   id: string;
@@ -28,7 +26,7 @@ interface AgentRow {
 function treeAgents(db: Db, sessionId: string): AgentRow[] {
   const rows = db
     .prepare(
-      `${TREE} SELECT s.id, s.parent_id AS parentId, s.title, s.native_id AS nativeId, s.cwd, s.started_at AS startedAt, tree.depth
+      `${SUBTREE} SELECT s.id, s.parent_id AS parentId, s.title, s.native_id AS nativeId, s.cwd, s.started_at AS startedAt, tree.depth
        FROM tree JOIN sessions s ON s.id = tree.id`,
     )
     .all(sessionId) as unknown as AgentRow[];
@@ -136,14 +134,14 @@ export function sessionTurns(db: Db, sessionId: string): Turn[] {
     .all(sessionId) as unknown as PromptRow[];
   const events = db
     .prepare(
-      `${TREE} SELECT e.session_id AS sessionId, e.ts, e.kind, e.tool_name AS toolName,
+      `${SUBTREE} SELECT e.session_id AS sessionId, e.ts, e.kind, e.tool_name AS toolName,
               CASE WHEN e.kind = 'tool_call' THEN e.tool_input END AS toolInput, e.is_error AS isError
        FROM tree JOIN events e ON e.session_id = tree.id ORDER BY e.ts, e.session_id, e.seq`,
     )
     .all(sessionId) as unknown as TreeEvent[];
   const usage = db
     .prepare(
-      `${TREE} SELECT u.ts, u.input, u.output, u.cache_read AS cacheRead, u.cache_write AS cacheWrite, u.cost_usd AS cost, u.cost_source AS costSource
+      `${SUBTREE} SELECT u.ts, u.input, u.output, u.cache_read AS cacheRead, u.cache_write AS cacheWrite, u.cost_usd AS cost, u.cost_source AS costSource
        FROM tree JOIN usage u ON u.session_id = tree.id ORDER BY u.ts`,
     )
     .all(sessionId) as unknown as UsageRow[];
@@ -260,7 +258,7 @@ export function sessionContext(db: Db, sessionId: string): ContextAgent[] {
   const requests = new Map<string, ContextPoint[]>();
   const rows = db
     .prepare(
-      `${TREE} SELECT u.session_id AS sessionId, u.ts, u.model, u.input, u.cache_read AS cacheRead, u.cache_write AS cacheWrite,
+      `${SUBTREE} SELECT u.session_id AS sessionId, u.ts, u.model, u.input, u.cache_read AS cacheRead, u.cache_write AS cacheWrite,
               u.output, u.cost_usd AS cost, u.cost_source AS costSource
        FROM tree JOIN usage u ON u.session_id = tree.id ORDER BY u.session_id, u.ts, u.seq`,
     )
@@ -273,7 +271,7 @@ export function sessionContext(db: Db, sessionId: string): ContextAgent[] {
   const markers = new Map<string, number[]>();
   const marks = db
     .prepare(
-      `${TREE} SELECT e.session_id AS sessionId, e.ts FROM tree JOIN events e ON e.session_id = tree.id
+      `${SUBTREE} SELECT e.session_id AS sessionId, e.ts FROM tree JOIN events e ON e.session_id = tree.id
        WHERE e.kind = 'system' AND substr(e.text, 1, ${COMPACTION_TEXT.length}) = ?`,
     )
     .all(sessionId, COMPACTION_TEXT) as unknown as { sessionId: string; ts: number }[];

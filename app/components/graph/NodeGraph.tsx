@@ -3,19 +3,19 @@
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { ActivityAgent, ActivityFile, OpCounts } from "../../../src/store/activity";
 import { agentColor } from "./categories";
-
-/** What a click in the node graph filters the time graph to. */
-export type Selection = { key: string; label: string } & ({ kind: "files"; files: number[] } | { kind: "agent"; agent: number });
+import { agentKey, changes, isChanged, nodeKey } from "./selection";
 
 interface Props {
   agents: ActivityAgent[];
   files: ActivityFile[];
-  selection: Selection | null;
-  onSelect: (selection: Selection) => void;
+  /** Key of the selected node (see `nodeKey`, `agentKey`), stable across live refreshes. */
+  selection: string | null;
+  onSelect: (key: string) => void;
 }
 
 /** A file column row: one file, a directory's read-only files, or a whole collapsed directory. */
 interface FileNode {
+  /** Stable: by path or directory, never by index. */
   key: string;
   kind: "file" | "reads" | "dir";
   label: string;
@@ -54,8 +54,6 @@ const COLLAPSE_TOTAL = 48;
 const COLLAPSE_DIR = 6;
 /** Height of the scroll viewport; agents stay inside it so they are visible without scrolling. */
 const VIEW_H = 560;
-
-const changed = (c: OpCounts) => c.writes + c.edits + c.deletes + c.moves;
 
 const basename = (p: string) => p.slice(p.lastIndexOf("/") + 1) || p;
 
@@ -106,7 +104,8 @@ export function NodeGraph({ agents, files, selection, onSelect }: Props) {
     const byDir = new Map<string, { modified: number[]; reads: number[] }>();
     files.forEach((f, i) => {
       const g = byDir.get(f.dir) ?? { modified: [], reads: [] };
-      (changed(f) ? g.modified : g.reads).push(i);
+      // Same rule as `resolveSelection` for `r:` (read-only) keys.
+      (isChanged(f) ? g.modified : g.reads).push(i);
       byDir.set(f.dir, g);
     });
     const byName = (a: number, b: number) => basename(files[a].path).localeCompare(basename(files[b].path));
@@ -119,7 +118,7 @@ export function NodeGraph({ agents, files, selection, onSelect }: Props) {
     );
   }, [files]);
 
-  const totalChanged = useMemo(() => files.filter((f) => changed(f) > 0).length, [files]);
+  const totalChanged = useMemo(() => files.filter((f) => isChanged(f)).length, [files]);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() =>
     totalChanged > COLLAPSE_TOTAL ? Object.fromEntries(groups.filter(([, g]) => g.modified.length > COLLAPSE_DIR).map(([dir]) => [dir, true])) : {},
   );
@@ -141,7 +140,7 @@ export function NodeGraph({ agents, files, selection, onSelect }: Props) {
           y += HEAD;
         }
         const detail = `${g.reads.length} ${g.reads.length === 1 ? "file" : "files"}`;
-        nodes.push({ key: `r:${dir}`, kind: "reads", label: dirLabel(dir), detail, files: g.reads, modified: false, deleted: false, y: y + ROW / 2 });
+        nodes.push({ key: nodeKey.reads(dir), kind: "reads", label: dirLabel(dir), detail, files: g.reads, modified: false, deleted: false, y: y + ROW / 2 });
         y += ROW;
         continue;
       }
@@ -152,7 +151,7 @@ export function NodeGraph({ agents, files, selection, onSelect }: Props) {
         const all = [...g.modified, ...g.reads];
         const c = sum(files, all);
         nodes.push({
-          key: `d:${dir}`,
+          key: nodeKey.dir(dir),
           kind: "dir",
           label: [g.modified.length && `${g.modified.length} changed`, g.reads.length && `${g.reads.length} read`].filter(Boolean).join(", "),
           detail: countsLabel(c),
@@ -167,19 +166,19 @@ export function NodeGraph({ agents, files, selection, onSelect }: Props) {
       for (const i of [...g.modified, ...(showReads ? g.reads : [])]) {
         const f = files[i];
         nodes.push({
-          key: `f:${i}`,
+          key: nodeKey.file(f.path),
           kind: "file",
           label: basename(f.path),
           detail: countsLabel(f),
           files: [i],
-          modified: changed(f) > 0,
+          modified: isChanged(f),
           deleted: f.deletes > 0,
           y: y + ROW / 2,
         });
         y += ROW;
       }
       if (!showReads && g.reads.length) {
-        nodes.push({ key: `r:${dir}`, kind: "reads", label: `${g.reads.length} read-only`, detail: countsLabel(sum(files, g.reads)), files: g.reads, modified: false, deleted: false, y: y + ROW / 2 });
+        nodes.push({ key: nodeKey.reads(dir), kind: "reads", label: `${g.reads.length} read-only`, detail: countsLabel(sum(files, g.reads)), files: g.reads, modified: false, deleted: false, y: y + ROW / 2 });
         y += ROW;
       }
     }
@@ -203,7 +202,7 @@ export function NodeGraph({ agents, files, selection, onSelect }: Props) {
         }
       }
       for (const [agent, c] of per) {
-        out.push({ agent, node: node.key, count: changed(c) + c.reads, style: c.deletes ? "delete" : changed(c) ? "write" : "read", y: node.y });
+        out.push({ agent, node: node.key, count: changes(c) + c.reads, style: c.deletes ? "delete" : isChanged(c) ? "write" : "read", y: node.y });
       }
     }
     return out;
@@ -235,7 +234,7 @@ export function NodeGraph({ agents, files, selection, onSelect }: Props) {
     if (!hover) return null;
     const on = new Set<string>([hover]);
     for (const e of edges) {
-      const a = `a:${e.agent}`;
+      const a = agentKey(agents, e.agent);
       if (hover === a || hover === e.node) {
         on.add(a);
         on.add(e.node);
@@ -243,21 +242,16 @@ export function NodeGraph({ agents, files, selection, onSelect }: Props) {
       }
     }
     return on;
-  }, [hover, edges]);
+  }, [hover, edges, agents]);
 
   const nodeClass = (key: string, base: string) =>
-    [base, connected && !connected.has(key) ? "ng-dim" : "", selection?.key === key ? "ng-selected" : ""].filter(Boolean).join(" ");
+    [base, connected && !connected.has(key) ? "ng-dim" : "", selection === key ? "ng-selected" : ""].filter(Boolean).join(" ");
 
   const activate = (e: KeyboardEvent, run: () => void) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       run();
     }
-  };
-
-  const selectNode = (node: FileNode) => {
-    const what = node.kind === "file" ? files[node.files[0]].path : node.kind === "dir" ? node.key.slice(2) || "./" : `read-only files in ${node.key.slice(2) || "./"}`;
-    onSelect({ kind: "files", key: node.key, label: what, files: node.files });
   };
 
   const toggleDir = (dir: string) => setCollapsed((c) => ({ ...c, [dir]: !c[dir] }));
@@ -321,14 +315,14 @@ export function NodeGraph({ agents, files, selection, onSelect }: Props) {
                 className={nodeClass(n.key, `ng-node ng-${n.kind}${n.modified ? " ng-mod" : ""}`)}
                 role="button"
                 tabIndex={0}
-                aria-pressed={selection?.key === n.key}
+                aria-pressed={selection === n.key}
                 aria-label={`${n.kind === "file" ? files[n.files[0]].path : n.label}: ${n.detail}. Show its tool calls.`}
                 onPointerEnter={() => setHover(n.key)}
                 onPointerLeave={() => setHover(null)}
                 onFocus={() => setHover(n.key)}
                 onBlur={() => setHover(null)}
-                onClick={() => selectNode(n)}
-                onKeyDown={(e) => activate(e, () => selectNode(n))}
+                onClick={() => onSelect(n.key)}
+                onKeyDown={(e) => activate(e, () => onSelect(n.key))}
               >
                 <title>{n.kind === "file" ? `${files[n.files[0]].path}\n${n.detail}` : `${n.label}\n${n.detail}`}</title>
                 <rect x={fileX - 10} y={n.y - ROW / 2} width={Math.max(0, width - fileX + 10)} height={ROW} className="ng-hit" />
@@ -348,7 +342,7 @@ export function NodeGraph({ agents, files, selection, onSelect }: Props) {
               </g>
             ))}
             {agents.map((a, i) => {
-              const key = `a:${i}`;
+              const key = agentKey(agents, i);
               const y = agentY[i];
               return (
                 <g
@@ -356,14 +350,14 @@ export function NodeGraph({ agents, files, selection, onSelect }: Props) {
                   className={nodeClass(key, "ng-node ng-agent")}
                   role="button"
                   tabIndex={0}
-                  aria-pressed={selection?.key === key}
+                  aria-pressed={selection === key}
                   aria-label={`${a.depth ? "Subagent" : "Session"} ${a.title}. Show its tool calls.`}
                   onPointerEnter={() => setHover(key)}
                   onPointerLeave={() => setHover(null)}
                   onFocus={() => setHover(key)}
                   onBlur={() => setHover(null)}
-                  onClick={() => onSelect({ kind: "agent", key, label: a.title, agent: i })}
-                  onKeyDown={(e) => activate(e, () => onSelect({ kind: "agent", key, label: a.title, agent: i }))}
+                  onClick={() => onSelect(key)}
+                  onKeyDown={(e) => activate(e, () => onSelect(key))}
                 >
                   <title>{a.title}</title>
                   <rect x={PAD} y={y - AGENT_H / 2} width={AGENT_W} height={AGENT_H} rx={AGENT_H / 2} className="ng-pill" style={{ stroke: agentColor(a) }} />

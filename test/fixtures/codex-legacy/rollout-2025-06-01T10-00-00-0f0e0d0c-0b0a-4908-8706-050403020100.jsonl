@@ -1,0 +1,13 @@
+{"id":"0f0e0d0c-0b0a-4908-8706-050403020100","timestamp":"2025-06-01T10:00:00.000Z","instructions":null,"git":{"commit_hash":"def456","branch":"legacy/main","repository_url":"https://example.invalid/repo.git"}}
+{"record_type":"state"}
+{"type":"message","id":null,"role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/work/legacy</cwd>\n  <approval_policy>on-request</approval_policy>\n</environment_context>"}]}
+{"type":"message","id":null,"role":"user","content":[{"type":"input_text","text":"List the source files"}]}
+{"record_type":"state"}
+{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"Listing the directory first."}],"encrypted_content":null}
+{"type":"function_call","id":"fc_1","name":"shell","arguments":"{\"command\":[\"ls\",\"src\"]}","call_id":"call_legacy_1"}
+{"type":"function_call_output","call_id":"call_legacy_1","output":"{\"output\":\"a.ts\\nb.ts\\n\",\"metadata\":{\"exit_code\":0,\"duration_seconds\":0.1}}"}
+{"type":"function_call","id":"fc_2","name":"shell","arguments":"{\"command\":[\"cat\",\"src/missing.ts\"]}","call_id":"call_legacy_2"}
+{"type":"function_call_output","call_id":"call_legacy_2","output":"{\"output\":\"cat: src/missing.ts: No such file or directory\\n\",\"metadata\":{\"exit_code\":1,\"duration_seconds\":0}}"}
+{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"There are two files: a.ts and b.ts."}]}
+{"record_type":"state"}
+{"type":"message","id":null,"role":"user","con

@@ -5,12 +5,14 @@ import { getSession } from "../../../../src/store/queries";
 import { ResourceMap } from "../../../components/graph/ResourceMap";
 import { parseMapFilters } from "../../../components/graph/mapFilters";
 import { integer } from "../../../lib/format";
+import { safeDecode } from "../../../lib/live";
 import { ready, type SearchParams } from "../../../lib/server";
 
 export default async function SessionGraphPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<SearchParams> }) {
   const { id } = await params;
   const db = await ready();
-  const detail = getSession(db, decodeURIComponent(id));
+  // A malformed escape (a stray `%`) is looked up as written: no such session rather than a crash.
+  const detail = getSession(db, safeDecode(id));
   if (!detail) notFound();
   const { session: s, parent } = detail;
   const activity = sessionActivity(db, s.id);

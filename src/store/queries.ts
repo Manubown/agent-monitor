@@ -3,6 +3,7 @@ import type { AutoTag } from "../core/autotags";
 import { normalizeModel } from "../core/pricing";
 import type { UsageInput } from "../core/windows";
 import type { Db } from "./db";
+import { SUBTREE } from "./tree";
 
 /** Scope applied to every query on a page, so all numbers on screen agree. */
 export interface Filters {
@@ -163,9 +164,7 @@ export function eventTimeline(db: Db, f: Filters, to: number = Date.now()): Even
 
 /** Events per time bin of a session and everything it spawned, over the tree's own span. Null without events. */
 export function sessionEventTimeline(db: Db, sessionId: string): EventTimeline | null {
-  const tree = `WITH RECURSIVE tree(id, depth) AS (
-    SELECT ?, 0 UNION ALL SELECT c.id, tree.depth + 1 FROM sessions c JOIN tree ON c.parent_id = tree.id WHERE tree.depth < 64)`;
-  const span = db.prepare(`${tree} SELECT MIN(e.ts) AS lo, MAX(e.ts) AS hi FROM events e JOIN tree ON e.session_id = tree.id`).get(sessionId) as {
+  const span = db.prepare(`${SUBTREE} SELECT MIN(e.ts) AS lo, MAX(e.ts) AS hi FROM events e JOIN tree ON e.session_id = tree.id`).get(sessionId) as {
     lo: number | null;
     hi: number | null;
   };
@@ -173,7 +172,7 @@ export function sessionEventTimeline(db: Db, sessionId: string): EventTimeline |
   // Inclusive end: the last event gets a bin of its own rather than sitting on the boundary.
   const binMs = binFor(span.hi - span.lo + 1);
   const rows = db
-    .prepare(`${tree} SELECT CAST((e.ts - ?) / ? AS INTEGER) AS bin, COUNT(*) AS n FROM events e JOIN tree ON e.session_id = tree.id GROUP BY bin`)
+    .prepare(`${SUBTREE} SELECT CAST((e.ts - ?) / ? AS INTEGER) AS bin, COUNT(*) AS n FROM events e JOIN tree ON e.session_id = tree.id GROUP BY bin`)
     .all(sessionId, span.lo, binMs) as unknown as { bin: number; n: number }[];
   return toTimeline(span.lo, span.hi + 1, binMs, rows);
 }
@@ -299,7 +298,10 @@ export interface SessionSummary extends SessionRow {
   total: TokenTotals & { cost: number | null; toolCalls: number; errors: number; lastActive: number };
 }
 
-/** Every session id with the id of its top-level ancestor. */
+/**
+ * Every session id with the id of its top-level ancestor. Only sessions below a root are reached; sync stores no parent
+ * cycles (writeSession breaks them), so that is every session.
+ */
 const TREE = `
   WITH RECURSIVE tree(root, id) AS (
     SELECT id, id FROM sessions WHERE parent_id IS NULL OR parent_id NOT IN (SELECT id FROM sessions)
@@ -392,8 +394,8 @@ export function activeSessions(db: Db, now: number): ActiveSession[] {
     )
     .all(now - ACTIVE_WINDOW_MS) as Record<string, unknown>[];
   const lastEvent = db.prepare(
-    `WITH RECURSIVE t(id) AS (SELECT ? UNION ALL SELECT c.id FROM sessions c JOIN t ON c.parent_id = t.id)
-     SELECT kind, tool_name AS toolName, ts FROM events WHERE session_id IN (SELECT id FROM t) ORDER BY ts DESC, seq DESC LIMIT 1`,
+    `${SUBTREE}
+     SELECT kind, tool_name AS toolName, ts FROM events WHERE session_id IN (SELECT id FROM tree) ORDER BY ts DESC, seq DESC LIMIT 1`,
   );
   const lastModel = db.prepare("SELECT model FROM usage WHERE session_id = ? ORDER BY ts DESC, seq DESC LIMIT 1");
   return rows.map((row) => {
@@ -480,9 +482,9 @@ export interface SessionDetail {
 export function getSession(db: Db, id: string): SessionDetail | null {
   const row = db
     .prepare(
-      `WITH RECURSIVE tree(id) AS (SELECT ? UNION ALL SELECT c.id FROM sessions c JOIN tree ON c.parent_id = tree.id)
+      `${SUBTREE}
        SELECT ${SESSION_COLUMNS}, ${ROLLUP}
-       FROM tree JOIN sessions x ON x.id = tree.id JOIN sessions s ON s.id = ?
+       FROM tree t JOIN sessions x ON x.id = t.id JOIN sessions s ON s.id = ?
        GROUP BY s.id`,
     )
     .get(id, id) as Record<string, unknown> | undefined;

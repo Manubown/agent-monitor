@@ -45,6 +45,13 @@ describe("fileOps", () => {
     expect(fileOps("shell", json({ command: ["apply_patch", patch] }), "/w")).toEqual(expected);
   });
 
+  it("reads Windows paths in slash form, relative ones against a Windows working directory", () => {
+    expect(fileOps("Read", json({ file_path: "c:\\w\\app\\a.ts" }))).toEqual([{ op: "read", path: "C:/w/app/a.ts" }]);
+    expect(fileOps("read", json({ path: "src\\a.ts:10-20" }), "C:\\w")).toEqual([{ op: "read", path: "C:/w/src/a.ts" }]);
+    const patch = "*** Begin Patch\n*** Update File: src\\a.ts\n*** Move to: src\\z.ts\n@@\n*** End Patch";
+    expect(fileOps("apply_patch", json({ input: patch }), "C:\\w")).toEqual([{ op: "move", path: "C:/w/src/a.ts", to: "C:/w/src/z.ts" }]);
+  });
+
   it("ignores other tools and malformed input", () => {
     expect(fileOps("bash", json({ command: "cat a.ts" }), "/w")).toEqual([]);
     expect(fileOps("read", "{not json", "/w")).toEqual([]);

@@ -41,8 +41,13 @@ async function main(): Promise<void> {
       const searchIndex = openSearchIndex(indexDir);
       console.log(`watching every ${seconds}s, database ${defaultDbPath()}`);
       for (;;) {
-        const r = await syncAll(db, { index: searchIndex });
-        if (r.parsed || r.errors.length || r.indexError) report(r);
+        try {
+          const r = await syncAll(db, { index: searchIndex });
+          if (r.parsed || r.errors.length || r.indexError) report(r);
+        } catch (error) {
+          // E.g. the database is locked by another process: the next round tries again.
+          console.error(`  sync failed (retried in ${seconds}s): ${error instanceof Error ? error.message : String(error)}`);
+        }
         await sleep(seconds * 1000);
       }
     }

@@ -287,6 +287,28 @@ describe("getSession root", () => {
   });
 });
 
+describe("parent cycles", () => {
+  // A malformed log can make two sessions each other's parent; tree queries must stop instead of recursing forever.
+  beforeEach(() => {
+    insertSession(db, { id: "omp:a", parentId: "omp:b", startedAt: T, endedAt: T + H });
+    insertSession(db, { id: "omp:b", parentId: "omp:a", startedAt: T, endedAt: T + H });
+    insertSession(db, { id: "omp:live", startedAt: T, endedAt: T + H });
+    insertEvent(db, "omp:a", 0, T, "user_message");
+    insertEvent(db, "omp:b", 0, T + 1, "tool_call", "bash");
+  });
+
+  it("returns a session inside a cycle, counting each member once", { timeout: 2000 }, () => {
+    const detail = getSession(db, "omp:a");
+    expect(detail?.session.subagents).toBe(1);
+    expect(ids(detail?.children ?? [])).toEqual(["omp:b"]);
+    expect(sessionEventTimeline(db, "omp:a")).not.toBeNull();
+  });
+
+  it("lists active trees without walking into the cycle", { timeout: 2000 }, () => {
+    expect(ids(activeSessions(db, T + H))).toEqual(["omp:live"]);
+  });
+});
+
 describe("resume commands", () => {
   it("builds each tool's resume command with POSIX quoting", () => {
     expect(claudeCodeAdapter.resumeCommand?.({ nativeId: "abc-123", cwd: "/home/me/My Project", filePath: "/x.jsonl" })).toBe(

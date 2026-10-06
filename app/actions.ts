@@ -4,8 +4,9 @@ import { revalidatePath } from "next/cache";
 import { normalizeTag } from "../src/store/queries";
 import { getDb, runSync } from "./lib/server";
 
+/** A failed sync is kept by `runSync` and shown in the top bar, so the button never turns it into an error page. */
 export async function syncNow(): Promise<void> {
-  await runSync();
+  await runSync().catch(() => undefined);
   revalidatePath("/", "layout");
 }
 

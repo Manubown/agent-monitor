@@ -1,13 +1,16 @@
-import { lastSync, onSync, type SyncEvent } from "../../lib/server";
+import { lastSync, onSync, storedFiles, type SyncEvent, syncHealth, syncRunning } from "../../lib/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const HEARTBEAT_MS = 25_000;
+const PROGRESS_MS = 1000;
 
 /**
- * Server-Sent Events: a `hello` event with the current sync state on connect,
- * then one `sync` event per completed sync. Clients refresh when `changed > 0`.
+ * Server-Sent Events: a `hello` event with the current sync state and health on connect, then one `sync` event per
+ * finished sync (a failed one too: it carries `changed: 0` and the new health). Clients decide from `sessions`/`cwds`
+ * whether their page is affected (`affectsPage` in app/lib/live.ts). Until the first sync of this server finishes,
+ * `progress` events report the log files stored so far for the import screen.
  */
 export function GET(request: Request): Response {
   const encoder = new TextEncoder();
@@ -25,15 +28,32 @@ export function GET(request: Request): Response {
 
       const last = lastSync();
       send("retry: 3000\n\n");
-      event("hello", { generation: last?.generation ?? null, at: last?.at ?? null });
+      event("hello", { generation: last?.generation ?? null, at: last?.at ?? null, health: syncHealth() });
 
-      const unsubscribe = onSync((e: SyncEvent) => event("sync", e));
+      let progress: ReturnType<typeof setInterval> | undefined;
+      const stopProgress = () => {
+        clearInterval(progress);
+        progress = undefined;
+      };
+      // Only while the first sync is importing: not once one finished, and not after it failed with none running (the
+      // background retry would otherwise keep this ticking forever). Any sync event, failed or not, ends it too.
+      const importing = () => !lastSync() && (syncRunning() || !syncHealth().syncError);
+      if (importing()) {
+        const report = () => (importing() ? event("progress", { files: storedFiles() }) : stopProgress());
+        report();
+        progress = setInterval(report, PROGRESS_MS);
+      }
+      const unsubscribe = onSync((e: SyncEvent) => {
+        stopProgress();
+        event("sync", e);
+      });
       const heartbeat = setInterval(() => send(": ping\n\n"), HEARTBEAT_MS);
       let closed = false;
       cleanup = () => {
         if (closed) return;
         closed = true;
         unsubscribe();
+        stopProgress();
         clearInterval(heartbeat);
         request.signal.removeEventListener("abort", cleanup);
         try {

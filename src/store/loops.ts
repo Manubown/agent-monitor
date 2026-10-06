@@ -1,6 +1,6 @@
 import os from "node:os";
-import path from "node:path";
 import { detectLoops, type Loop, type LoopEvent } from "../core/loops";
+import { fileKey } from "../core/paths";
 import { displayPath, type SessionActivity } from "./activity";
 import type { Db } from "./db";
 
@@ -49,8 +49,7 @@ export function sessionLoops(db: Db, activity: SessionActivity, home: string = o
         continue;
       }
       // Same key as the activity's file list: `~/x` expanded, NFC, shown relative to the session's directory.
-      const abs = (loop.subject.startsWith("~/") && home ? path.posix.join(home, loop.subject.slice(2)) : loop.subject).normalize("NFC");
-      const subject = displayPath(abs, activity.cwd, home);
+      const subject = displayPath(fileKey(loop.subject, home), activity.cwd, home);
       out.push({ ...loop, subject, agent, file: fileIndex.get(subject) ?? null });
     }
   }

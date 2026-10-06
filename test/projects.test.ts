@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { nestedLayout, type Rect, squarify } from "../app/components/projects/squarify";
 import { ancestors, buildTree, dominantSource, findDir, splitPath, type TreeNode, touches } from "../src/core/filetree";
 import { dim, GOURCE_COLOURS, type GourceTouch, gourceLog } from "../src/core/gource";
-import { type Db, openDb } from "../src/store/db";
-import { listProjects, projectFile, projectGource, projectMap, sessionGource } from "../src/store/projects";
+import { bumpGeneration, type Db, openDb } from "../src/store/db";
+import { listProjects, projectFile, projectGource, projectMap, sessionGource, touchCacheStats } from "../src/store/projects";
 
 const T = Date.UTC(2026, 9, 1, 12);
 const MIN = 60_000;
@@ -47,6 +47,17 @@ describe("buildTree", () => {
     expect(splitPath("/tmp/x")).toEqual(["/", "tmp", "x"]);
     expect(ancestors("/tmp/x").map((a) => a.path)).toEqual(["", "/", "/tmp", "/tmp/x"]);
     expect(ancestors("src/lib").map((a) => a.path)).toEqual(["", "src", "src/lib"]);
+  });
+
+  it("roots Windows paths outside the project at their drive", () => {
+    const tree = buildTree([
+      { path: "src/a.ts", reads: 1, changes: 0, sources: {} },
+      { path: "D:/data/x.csv", reads: 1, changes: 0, sources: {} },
+      { path: "D:/data/y.csv", reads: 0, changes: 1, sources: {} },
+    ]);
+    expect(tree.children.map((c) => c.path).sort()).toEqual(["D:", "src"]);
+    expect(findDir(tree, "D:/data")?.files).toBe(2);
+    expect(ancestors("D:/data").map((a) => a.path)).toEqual(["", "D:", "D:/data"]);
   });
 
   it("picks the dominant source, ties alphabetically", () => {
@@ -213,6 +224,22 @@ describe("project store", () => {
     expect(map).toMatchObject({ sessions: 2, agents: 3, reads: 3, changes: 4 });
   });
 
+  it("maps a Windows project's files relative to it, however each path was written", () => {
+    insertSession(db, "claude-code:w", { cwd: "C:\\work\\win" });
+    insertCalls(db, "claude-code:w", [
+      { ts: T, tool: "Read", input: { file_path: "C:\\work\\win\\src\\a.ts" } },
+      { ts: T + 1, tool: "Edit", input: { file_path: "c:\\work\\win\\src\\a.ts", old_string: "a", new_string: "b" } },
+      { ts: T + 2, tool: "read", input: { path: "src\\b.ts" } },
+      { ts: T + 3, tool: "Read", input: { file_path: "C:\\work\\win" } },
+    ]);
+    const map = projectMap(db, "C:\\work\\win", {}, "C:\\Users\\me");
+    expect(map.files.map((f) => [f.path, f.reads, f.edits])).toEqual([
+      ["src/a.ts", 1, 1],
+      ["src/b.ts", 1, 0],
+    ]);
+    expect(projectFile(db, "C:\\work\\win", {}, "src/a.ts", "C:\\Users\\me")?.abs).toBe("C:/work/win/src/a.ts");
+  });
+
   it("applies time and source filters on top of the cached log", () => {
     expect(projectMap(db, "/work/proj", { from: T + 86400_000 }, HOME).files.map((f) => f.path)).toEqual(["src/a.ts"]);
     const codexOnly = projectMap(db, "/work/proj", { source: "claude-code" }, HOME);
@@ -248,5 +275,37 @@ describe("project store", () => {
     expect(new Set(tree.map((x) => x.user))).toEqual(new Set(["Build feature", "Explore"]));
     expect(tree.every((x) => x.source === "omp")).toBe(true);
     expect(sessionGource(db, "omp:missing", HOME)).toBeNull();
+  });
+
+  it("re-parses only the sessions whose events changed after a sync", () => {
+    const rehash = (id: string, hash: string) => db.prepare("UPDATE sessions SET events_hash = ? WHERE id = ?").run(hash, id);
+    const first = projectMap(db, "/work/proj", {}, HOME);
+    expect(touchCacheStats(db)).toEqual({ parses: 3, cached: 3 });
+
+    // Another project's session changes: this project's sessions keep their parsed touches.
+    db.prepare("UPDATE events SET tool_input = ? WHERE session_id = ?").run(JSON.stringify({ path: "y.ts" }), "omp:elsewhere");
+    rehash("omp:elsewhere", "h1");
+    bumpGeneration(db);
+    expect(projectMap(db, "/work/proj", {}, HOME)).toEqual(first);
+    expect(touchCacheStats(db).parses).toBe(3);
+
+    // The subagent gains a call: only it is parsed again, and the map shows the new touch.
+    db.prepare("INSERT INTO events (session_id, seq, ts, kind, tool_name, tool_call_id, tool_input) VALUES (?, 1, ?, 'tool_call', 'write', 'c1', ?)").run(
+      "omp:sub",
+      T + 3 * MIN,
+      JSON.stringify({ path: "src/fresh.ts" }),
+    );
+    rehash("omp:sub", "h2");
+    bumpGeneration(db);
+    const map = projectMap(db, "/work/proj", {}, HOME);
+    expect(touchCacheStats(db).parses).toBe(4);
+    expect(map.files.map((f) => f.path)).toContain("src/fresh.ts");
+    expect(map.agents).toBe(first.agents);
+
+    // A removed session leaves the cache at the next sync.
+    db.prepare("DELETE FROM sessions WHERE id = ?").run("claude-code:c1");
+    bumpGeneration(db);
+    expect(projectMap(db, "/work/proj", {}, HOME).files.find((f) => f.path === "src/a.ts")?.writes).toBe(0);
+    expect(touchCacheStats(db)).toEqual({ parses: 4, cached: 2 });
   });
 });

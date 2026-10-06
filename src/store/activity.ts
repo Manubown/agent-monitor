@@ -1,8 +1,10 @@
 import os from "node:os";
 import path from "node:path";
 import { type FileOp, fileOps } from "../core/activity";
+import { dirKey, fileKey, isAbsolutePath, sessionPath } from "../core/paths";
 import { type ResourceKind, type ResourceRef, toolResources } from "../core/resources";
 import type { Db } from "./db";
+import { SUBTREE } from "./tree";
 
 /**
  * What a session tree (the session plus every subagent, recursively) did:
@@ -83,6 +85,8 @@ export type { ResourceKind };
 /** A non-file thing calls worked on: a command head, URL or web search, search pattern, spawned agent or tool. */
 export interface ActivityResource {
   kind: ResourceKind;
+  /** What tells resources of one kind apart (normalized command head, URL, query...); unique per kind, unlike `label`. */
+  key: string;
   label: string;
   /** Binary, domain ("search" for web searches), search tool, spawning agent's title, MCP server or "tools". */
   group: string;
@@ -204,14 +208,17 @@ interface EventRow {
   isError: number;
 }
 
-/** Display form of an absolute path: relative to `cwd` inside it, `~/…` under `home`. */
+/** Display form of an absolute path (slash form, see `src/core/paths.ts`): relative to `cwd` inside it, `~/…` under `home`. */
 export function displayPath(p: string, cwd: string | null, home: string): string {
-  if (cwd && path.posix.isAbsolute(cwd)) {
-    const root = cwd.endsWith("/") ? cwd : `${cwd}/`;
-    if (p === cwd) return ".";
+  // Keys as `fileKey` makes them: slash form, no trailing slash, NFC (a decomposed home on macOS still matches).
+  const dir = cwd && dirKey(cwd);
+  if (dir && isAbsolutePath(dir)) {
+    const root = dir.endsWith("/") ? dir : `${dir}/`;
+    if (p === dir) return ".";
     if (p.startsWith(root)) return p.slice(root.length);
   }
-  if (home && home !== "/" && p.startsWith(`${home}/`)) return `~/${p.slice(home.length + 1)}`;
+  const h = home && dirKey(home);
+  if (h && h !== "/" && p.startsWith(`${h}/`)) return `~/${p.slice(h.length + 1)}`;
   return p;
 }
 
@@ -227,8 +234,7 @@ const COUNT_KEY: Record<Exclude<FileOp["op"], "search">, keyof OpCounts> = {
 export function sessionActivity(db: Db, sessionId: string, home: string = os.homedir()): SessionActivity | null {
   const rows = db
     .prepare(
-      `WITH RECURSIVE tree(id, depth) AS (
-         SELECT ?, 0 UNION ALL SELECT c.id, tree.depth + 1 FROM sessions c JOIN tree ON c.parent_id = tree.id WHERE tree.depth < 64)
+      `${SUBTREE}
        SELECT s.id, s.parent_id AS parentId, s.title, s.native_id AS nativeId, s.file_path AS filePath, s.cwd,
               s.started_at AS startedAt, s.ended_at AS endedAt, substr(d.text, 1, 600) AS prompt
        FROM tree JOIN sessions s ON s.id = tree.id
@@ -269,6 +275,7 @@ export function sessionActivity(db: Db, sessionId: string, home: string = os.hom
   }));
 
   const cwd = rootRow.cwd;
+  const cwdKey = cwd && dirKey(cwd);
   const actions: ActivityAction[] = [];
   const markers: ActivityMarker[] = [];
   const files: ActivityFile[] = [];
@@ -286,7 +293,7 @@ export function sessionActivity(db: Db, sessionId: string, home: string = os.hom
       i = resources.length;
       resourceIndex.set(id, i);
       const ts = actions[action].ts;
-      resources.push({ kind: r.kind, label: r.label, group: r.group, ...(r.agent !== undefined ? { agent: r.agent } : {}), first: ts, last: ts, calls: 0, errors: 0, agents: [], actions: [] });
+      resources.push({ kind: r.kind, key: r.key, label: r.label, group: r.group, ...(r.agent !== undefined ? { agent: r.agent } : {}), first: ts, last: ts, calls: 0, errors: 0, agents: [], actions: [] });
     }
     const a = actions[action];
     if (!a.res) a.res = [i];
@@ -294,10 +301,9 @@ export function sessionActivity(db: Db, sessionId: string, home: string = os.hom
   };
 
   const touch = (raw: string, agent: number, action: number, ts: number, kind: Exclude<FileOp["op"], "search">) => {
-    // One key per file however it was written: `~/x` and `/home/me/x`, composed and decomposed umlauts.
-    const abs = (raw.startsWith("~/") && home ? path.posix.join(home, raw.slice(2)) : raw).normalize("NFC");
+    const abs = fileKey(raw, home);
     // The working directory itself is a directory listing, not a file.
-    if (abs === cwd) return;
+    if (abs === cwdKey) return;
     let i = fileIndex.get(abs);
     if (i === undefined) {
       i = files.length;
@@ -322,8 +328,7 @@ export function sessionActivity(db: Db, sessionId: string, home: string = os.hom
 
   // One pass over the tree's events in (agent, seq) order; results only carry what pairing needs.
   const events = db.prepare(
-    `WITH RECURSIVE tree(id, depth) AS (
-       SELECT ?, 0 UNION ALL SELECT c.id, tree.depth + 1 FROM sessions c JOIN tree ON c.parent_id = tree.id WHERE tree.depth < 64)
+    `${SUBTREE}
      SELECT e.session_id AS sessionId, e.seq, e.ts, e.kind,
             CASE WHEN e.kind IN ('user', 'error') THEN substr(e.text, 1, 400) END AS text,
             e.tool_name AS toolName, e.tool_call_id AS toolCallId,
@@ -368,10 +373,7 @@ export function sessionActivity(db: Db, sessionId: string, home: string = os.hom
         touch(op.path, agent, index, e.ts, op.op);
         if (op.to) touch(op.to, agent, index, e.ts, "move");
       }
-      const where = (p: string) => {
-        const abs = p.startsWith("~/") || path.posix.isAbsolute(p) || !agentCwd ? p : path.posix.join(agentCwd, p);
-        return displayPath(abs.startsWith("~/") && home ? path.posix.join(home, abs.slice(2)) : abs, cwd, home);
-      };
+      const where = (p: string) => displayPath(fileKey(sessionPath(p, agentCwd), home), cwd, home);
       for (const r of toolResources(tool, args, e.toolInput, where)) use(index, r);
       if (Object.hasOwn(SPAWN, tool.toLowerCase())) spawnCalls[agent].push({ action: index, ts: e.ts, input: e.toolInput ?? "" });
     } else if (e.kind === "tool_result") {

@@ -1,4 +1,4 @@
-import path from "node:path";
+import { sessionPath } from "./paths";
 
 /**
  * What a tool call did to files, recovered from its arguments. Tools differ
@@ -36,13 +36,11 @@ const parse = (input: string | null | undefined): Record<string, unknown> | unde
 
 const text = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
 
-/** Resolve against the session's working directory; leave URIs (`agent://…`, `https://…`) out. */
+/** Resolve against the session's working directory, in slash form (see `./paths`); leave URIs (`agent://…`, `https://…`) out. */
 function normalize(p: string, cwd: string | undefined): string | undefined {
   const raw = p.trim().replace(SELECTOR, "");
   if (!raw || raw.includes("://")) return undefined;
-  if (raw.startsWith("~/")) return raw;
-  if (path.posix.isAbsolute(raw)) return path.posix.normalize(raw);
-  return cwd && path.posix.isAbsolute(cwd) ? path.posix.join(cwd, raw) : raw;
+  return sessionPath(raw, cwd);
 }
 
 function applyPatch(patch: string, cwd: string | undefined): FileOp[] {

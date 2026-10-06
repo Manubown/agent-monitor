@@ -5,30 +5,32 @@ import { useMemo, useState } from "react";
 import type { SessionActivity as Activity } from "../../../src/store/activity";
 import { clock } from "../../lib/format";
 import { agentColor, CATEGORY_COLOR, eventHref } from "./categories";
-import { NodeGraph, type Selection } from "./NodeGraph";
+import { NodeGraph } from "./NodeGraph";
+import { actionKey, resolveSelection } from "./selection";
 import { TimeGraph } from "./TimeGraph";
 import "../../graph.css";
 
 /** Rows listed under the graphs for a selection; the time graph still shows all of them. */
 const LIST_MAX = 200;
 
-/** "What it did": the session tree's tool calls over time and the files they touched, linked by selection. */
-export function SessionActivity({ data }: { data: Activity }) {
-  const { agents, actions, markers, files } = data;
-  const [selection, setSelection] = useState<Selection | null>(null);
+/** What the session page sends: no resources, and calls without their file and resource links (only the resource map uses those). */
+export type SessionActivityData = Pick<Activity, "agents" | "markers" | "files"> & { actions: Omit<Activity["actions"][number], "files" | "res">[] };
 
-  const selected = useMemo(() => {
-    if (!selection) return null;
-    if (selection.kind === "agent") return new Set(actions.flatMap((a, i) => (a.agent === selection.agent ? [i] : [])));
-    return new Set(selection.files.flatMap((f) => files[f].actions));
-  }, [selection, actions, files]);
+/** "What it did": the session tree's tool calls over time and the files they touched, linked by selection. */
+export function SessionActivity({ data }: { data: SessionActivityData }) {
+  const { agents, actions, markers, files } = data;
+  // A node key (agent id or path), not an index: a live refresh can insert agents and files anywhere.
+  const [key, setKey] = useState<string | null>(null);
+  const selection = useMemo(() => (key === null ? null : resolveSelection(key, data)), [key, data]);
+
+  const selected = useMemo(() => (selection ? new Set(selection.actions) : null), [selection]);
 
   const listed = useMemo(
     () => (selected ? [...selected].sort((a, b) => actions[a].ts - actions[b].ts || a - b) : []),
     [selected, actions],
   );
 
-  const select = (next: Selection) => setSelection((cur) => (cur?.key === next.key ? null : next));
+  const select = (next: string) => setKey((cur) => (cur === next ? null : next));
 
   return (
     <div className="sa">
@@ -38,14 +40,14 @@ export function SessionActivity({ data }: { data: Activity }) {
             Showing {listed.length} {listed.length === 1 ? "call" : "calls"} {selection.kind === "agent" ? "by" : "touching"}{" "}
             <span className="mono">{selection.label}</span>
           </span>
-          <button type="button" className="btn" onClick={() => setSelection(null)}>
+          <button type="button" className="btn" onClick={() => setKey(null)}>
             Clear
           </button>
         </div>
       )}
       <TimeGraph agents={agents} actions={actions} markers={markers} selected={selected} focusAgent={selection?.kind === "agent" ? selection.agent : null} />
       {files.length > 0 ? (
-        <NodeGraph agents={agents} files={files} selection={selection} onSelect={select} />
+        <NodeGraph agents={agents} files={files} selection={selection ? key : null} onSelect={select} />
       ) : (
         <p className="muted">No file reads or changes recorded.</p>
       )}
@@ -56,7 +58,7 @@ export function SessionActivity({ data }: { data: Activity }) {
               const a = actions[i];
               const agent = agents[a.agent];
               return (
-                <li key={i}>
+                <li key={actionKey(agents, a)}>
                   <Link href={eventHref(agent, a.seq)} className="sa-row">
                     <span className="ev-time">{clock(a.ts)}</span>
                     <span className="sa-agent" title={agent.title}>

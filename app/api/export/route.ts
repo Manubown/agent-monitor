@@ -1,7 +1,8 @@
 import { totalTokens, type TokenUsage } from "../../../src/core/types";
 import type { Db } from "../../../src/store/db";
 import { byModel, byProject, daily, type Filters, isSessionSort, listSessions, type SessionSort, type SessionSummary } from "../../../src/store/queries";
-import { filtersFrom, ready, type SearchParams } from "../../lib/server";
+import { attachment, first, oneOf, paramsOf } from "../../lib/params";
+import { filtersFrom, ready } from "../../lib/server";
 import { type Cell, toCsv } from "./csv";
 import { gourceExport } from "./gource";
 
@@ -85,41 +86,40 @@ const VIEWS: Record<string, View<unknown>> = {
   }),
 };
 
-const slug = (s: string): string =>
-  s
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
+const FORMATS = { csv: "text/csv; charset=utf-8", json: "application/json; charset=utf-8" } as const;
 
 /** GET /api/export?view=sessions|daily|models|projects&format=csv|json plus the page filters (range, source, project, q, tag) and, for sessions, sort; view=gource: see gource.ts. */
 export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
-  const params: SearchParams = Object.fromEntries(url.searchParams);
-  const name = url.searchParams.get("view") ?? "sessions";
-  const format = url.searchParams.get("format") ?? "csv";
+  const params = paramsOf(url.searchParams);
+  const requested = first(params.view) ?? "sessions";
   // Gource custom log of a session tree or a project (see gource.ts); not a table, so outside VIEWS.
-  if (name === "gource") return gourceExport(await ready(), url);
-  const v = VIEWS[name];
-  if (!v) return new Response(`Unknown view "${name}"; use ${Object.keys(VIEWS).join(", ")}.`, { status: 400 });
-  if (format !== "csv" && format !== "json") return new Response(`Unknown format "${format}"; use csv or json.`, { status: 400 });
+  if (requested === "gource") return gourceExport(url, ready);
+  // Own keys only: `view=constructor` must not find Object.prototype.constructor.
+  const name = oneOf(VIEWS, requested);
+  if (!name) return new Response(`Unknown view "${requested}"; use ${Object.keys(VIEWS).join(", ")} or gource.`, { status: 400 });
+  const requestedFormat = first(params.format) ?? "csv";
+  const format = oneOf(FORMATS, requestedFormat);
+  if (!format) return new Response(`Unknown format "${requestedFormat}"; use csv or json.`, { status: 400 });
 
+  const v = VIEWS[name];
   const f = filtersFrom(params);
-  const sort = url.searchParams.get("sort");
+  const sort = first(params.sort);
   const rows = v.rows(await ready(), f, isSessionSort(sort) ? sort : "recent");
   const columns = Object.entries(v.columns);
-  const filename = [
-    "agent-monitor",
-    name,
-    f.range,
-    f.source,
-    f.cwd && slug(f.cwd.split(/[\\/]/).filter(Boolean).pop() ?? ""),
-    f.tag && `tag-${slug(f.tag)}`,
-    f.q && `q-${slug(f.q)}`,
-    new Date().toISOString().slice(0, 10),
-  ]
-    .filter(Boolean)
-    .join("-");
+  const disposition = attachment(
+    [
+      "agent-monitor",
+      name,
+      f.range,
+      f.source,
+      f.cwd && (f.cwd.split(/[\\/]/).filter(Boolean).pop() ?? "project"),
+      f.tag && `tag-${f.tag}`,
+      f.q && `q-${f.q}`,
+      new Date().toISOString().slice(0, 10),
+    ],
+    format,
+  );
 
   const body =
     format === "json"
@@ -134,8 +134,8 @@ export async function GET(request: Request): Promise<Response> {
         );
   return new Response(body, {
     headers: {
-      "Content-Type": format === "json" ? "application/json; charset=utf-8" : "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${filename}.${format}"`,
+      "Content-Type": FORMATS[format],
+      "Content-Disposition": disposition,
       "Cache-Control": "no-store",
     },
   });

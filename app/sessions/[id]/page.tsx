@@ -8,7 +8,6 @@ import { sessionFlame } from "../../../src/store/flame";
 import { sessionLoops } from "../../../src/store/loops";
 import {
   allTags,
-  DEFAULT_TIMELINE_KINDS,
   type EventRow,
   getSession,
   isActive,
@@ -32,6 +31,9 @@ import { GourceLinks } from "../../components/projects/GourceLinks";
 import { projectMapHref } from "../../components/projects/links";
 import { clock, dateTime, duration, integer, per, tokens, usd } from "../../lib/format";
 import { ready, type SearchParams } from "../../lib/server";
+import { safeDecode } from "../../lib/live";
+import { nonNegativeInt } from "../../lib/params";
+import { atTarget, cappedRange, isFollowing, type PagerRange, pagerLink, pagerRanges, type TimelineLink, timelineHref as sessionTimelineHref } from "./timeline";
 
 const KIND_LABEL: Record<string, string> = {
   user: "Prompt",
@@ -116,17 +118,12 @@ function EventBody({ e }: { e: EventRow }) {
   }
 }
 
-/** Non-negative integer query parameter, or undefined. */
-const seqParam = (v: string | string[] | undefined): number | undefined => {
-  const n = Number(Array.isArray(v) ? v[0] : v);
-  return v !== undefined && Number.isInteger(n) && n >= 0 ? n : undefined;
-};
-
 export default async function SessionPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<SearchParams> }) {
   const { id } = await params;
   const query = await searchParams;
   const db = await ready();
-  const detail = getSession(db, decodeURIComponent(id));
+  // A malformed escape (a stray `%`) is looked up as written: no such session rather than a crash.
+  const detail = getSession(db, safeDecode(id));
   if (!detail) notFound();
   const { session: s, parent, root, children, timelineCounts, tools } = detail;
   const live = isActive(s.total.lastActive, Date.now());
@@ -134,22 +131,18 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
   const resume = adapterById(root.source)?.resumeCommand?.({ nativeId: root.nativeId, cwd: root.cwd ?? undefined, filePath: root.filePath });
 
   const kinds = parseTimelineKinds(query.kinds);
-  const at = seqParam(query.at);
-  const win = timelinePage(db, s.id, { kinds, from: seqParam(query.from), to: seqParam(query.to), at });
+  const at = nonNegativeInt(query.at);
+  // At most TIMELINE_MAX events per render, whatever the URL asks for.
+  const toParam = nonNegativeInt(query.to);
+  const win = timelinePage(db, s.id, { kinds, ...cappedRange({ from: nonNegativeInt(query.from), to: toParam }), at });
   const events = win.events;
-  /** Timeline URL; `at` stays so a search hit remains listed while paging or filtering around it. */
-  const timelineHref = (shown: readonly TimelineKind[], p: { from?: number; to?: number | null; at?: number } = {}) => {
-    const qs = new URLSearchParams();
-    const isDefault = shown.length === DEFAULT_TIMELINE_KINDS.length && shown.every((k) => DEFAULT_TIMELINE_KINDS.includes(k));
-    if (!isDefault) qs.set("kinds", shown.join(","));
-    if (p.at !== undefined) qs.set("at", String(p.at));
-    if (p.from !== undefined && (p.from > 0 || p.to != null)) qs.set("from", String(p.from));
-    if (p.to != null) qs.set("to", String(p.to));
-    return `/sessions/${encodeURIComponent(s.id)}${qs.size ? `?${qs}` : ""}`;
-  };
-  const pageHref = (from: number, to: number | null) => timelineHref(kinds, { from, to, at });
-  const earlier = Math.min(TIMELINE_PAGE, win.from);
-  const later = Math.min(TIMELINE_PAGE, win.total - win.to);
+  /** Whether live updates keep bringing in the newest events (see `isFollowing` for when they stop). */
+  const following = isFollowing(win, toParam);
+  /** Timeline URL; `at` stays so a search hit remains listed while filtering around it, and while paging until a slide drops it. */
+  const timelineHref = (shown: readonly TimelineKind[], p: TimelineLink = {}) => sessionTimelineHref(s.id, shown, p);
+  const target = atTarget(win, at, kinds);
+  const pageHref = (range: PagerRange) => timelineHref(kinds, pagerLink(range, at, target));
+  const pager = pagerRanges(win, following);
   const chipHrefs: Record<string, string> = {
     all: timelineHref(TIMELINE_KINDS.filter((k) => timelineCounts[k] > 0), { at }),
   };
@@ -166,6 +159,8 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
   const contextCache = s.input + s.cacheRead + s.cacheWrite;
   // Tool calls of the whole tree (this session and its subagents) for "What it did".
   const activity = s.total.toolCalls > 0 ? sessionActivity(db, s.id) : null;
+  // What the client components here read: calls without their file and resource links, no resource list (only the resource map uses them).
+  const slim = activity && { agents: activity.agents, markers: activity.markers, files: activity.files, actions: activity.actions.map(({ files: _f, res: _r, ...a }) => a) };
   const timeline = sessionEventTimeline(db, s.id);
   // Model requests per agent of the tree (with compactions) and per-prompt turns for "Context per request" and "Turns".
   const context = sessionContext(db, s.id);
@@ -308,7 +303,7 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
               <Link href={`/sessions/${encodeURIComponent(s.id)}/graph`}>Open full map →</Link>
             </span>
           </div>
-          <SessionActivity data={activity} />
+          <SessionActivity data={slim!} />
         </section>
       )}
 
@@ -322,7 +317,7 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
                 : "tool calls with their durations; click one to open it in the timeline"}
             </span>
           </div>
-          <FlameGraph agents={activity.agents} actions={activity.actions} flame={sessionFlame(db, activity)} />
+          <FlameGraph agents={activity.agents} actions={slim!.actions} flame={sessionFlame(db, activity)} />
         </section>
       )}
 
@@ -466,10 +461,11 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
               <span className="muted">
                 Events {integer(win.from + 1)}–{integer(win.to)} of {integer(win.total)} matching
               </span>
-              <Link href={pageHref(win.from - earlier, win.tail ? null : win.to)} scroll={false}>
-                Show {integer(earlier)} earlier
+              <Link href={pageHref(pager.earlier)} scroll={false}>
+                Show {integer(pager.earlierCount)} earlier
               </Link>
               <Link href={timelineHref(kinds, { from: 0, to: Math.min(win.total, TIMELINE_PAGE) })}>Jump to start</Link>
+              {win.to < win.total && <Link href={timelineHref(kinds)}>Jump to latest</Link>}
             </div>
           )}
           {events.length === 0 && (
@@ -492,8 +488,8 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
               <span className="muted">
                 {integer(win.total - win.to)} newer {win.total - win.to === 1 ? "event" : "events"}
               </span>
-              <Link href={pageHref(win.from, win.to + later >= win.total ? null : win.to + later)} scroll={false}>
-                Show {integer(later)} later
+              <Link href={pageHref(pager.later)} scroll={false}>
+                Show {integer(pager.laterCount)} later
               </Link>
               <Link href={timelineHref(kinds)}>Jump to latest</Link>
             </div>

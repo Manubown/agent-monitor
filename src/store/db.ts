@@ -10,7 +10,7 @@ export type Db = DatabaseSync;
  * dropped and rebuilt from the live logs plus the raw-log archive on next sync.
  * User data (tags) lives in user.db and is never dropped.
  */
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 const SCHEMA = `
 CREATE TABLE meta (
@@ -25,7 +25,11 @@ CREATE TABLE files (
   mtime_ms    REAL NOT NULL,
   synced_at   INTEGER NOT NULL,
   missing     INTEGER NOT NULL DEFAULT 0,
-  error       TEXT
+  error       TEXT,
+  -- The archive copy as of our last write, so a grown log only appends its new bytes (null: unknown, rewrite it).
+  archived_size    INTEGER,                     -- bytes of the log the copy holds
+  archived_hash    TEXT,                        -- sha1 of those bytes
+  archived_gz_size INTEGER                      -- size of the .gz file we left
 );
 
 CREATE TABLE sessions (
@@ -60,6 +64,10 @@ CREATE TABLE sessions (
 CREATE INDEX sessions_started ON sessions(started_at);
 CREATE INDEX sessions_parent ON sessions(parent_id);
 CREATE INDEX sessions_file ON sessions(file_path);
+-- Filters.cwd, the project pages (ordered by start) and grouping by project.
+CREATE INDEX sessions_cwd ON sessions(cwd, started_at, id);
+-- Filters.from on sessions ("active in the range").
+CREATE INDEX sessions_ended ON sessions(ended_at);
 
 CREATE TABLE events (
   session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -74,7 +82,11 @@ CREATE TABLE events (
   model        TEXT,
   PRIMARY KEY (session_id, seq)
 );
-CREATE INDEX events_tool ON events(tool_name);
+-- Covering indexes for the cross-session event aggregates, which would otherwise read every row's text: the
+-- timeline, the heatmap and MIN(ts) (ts, session_id), and the tool table (kind, tool_name, is_error, ts, session_id).
+-- Per-session reads use the primary key.
+CREATE INDEX events_ts ON events(ts, session_id);
+CREATE INDEX events_kind ON events(kind, tool_name, is_error, ts, session_id);
 
 CREATE TABLE usage (
   session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

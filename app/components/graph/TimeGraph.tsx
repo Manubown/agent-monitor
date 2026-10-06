@@ -5,6 +5,7 @@ import { type KeyboardEvent, type ReactNode, useEffect, useId, useMemo, useRef, 
 import type { ActionCategory, ActivityAction, ActivityAgent, ActivityMarker } from "../../../src/store/activity";
 import { clock, duration } from "../../lib/format";
 import { agentColor, CATEGORIES, CATEGORY_COLOR, CATEGORY_LABEL, eventHref } from "./categories";
+import { actionKey, uniqueKeys } from "./selection";
 import { timeScale, timeTicks } from "./timeScale";
 
 interface Props {
@@ -41,8 +42,9 @@ export function TimeGraph({ agents, actions, markers, selected, focusAgent }: Pr
   const uid = useId().replace(/:/g, "");
   const ref = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
-  const [active, setActive] = useState<number | null>(null);
-  const [focusIndex, setFocusIndex] = useState(0);
+  // Hover and keyboard focus by mark key (first call or marker by agent id and seq): a live refresh can insert calls anywhere.
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const [focusKey, setFocusKey] = useState<string | null>(null);
 
   useEffect(() => {
     const el = ref.current;
@@ -94,7 +96,19 @@ export function TimeGraph({ agents, actions, markers, selected, focusAgent }: Pr
     return lanes.flat();
   }, [agents, actions, markers, selected, scale, plotX0]);
 
-  const current = Math.min(focusIndex, Math.max(0, items.length - 1));
+  /** Per mark, by its first call or its marker event; also the React key, so a refresh keeps the focused mark's element. */
+  const keys = useMemo(
+    () =>
+      uniqueKeys(
+        items.map((item) =>
+          item.kind === "bin" ? `b\n${actionKey(agents, actions[item.actions[0]])}` : `m\n${actionKey(agents, markers[item.marker])}`,
+        ),
+      ),
+    [items, agents, actions, markers],
+  );
+  const find = (key: string | null) => (key === null ? -1 : keys.indexOf(key));
+  const current = Math.max(0, find(focusKey));
+  const active = find(activeKey);
 
   const hrefOf = (item: Item): string => {
     if (item.kind === "marker") return eventHref(agents[item.agent], markers[item.marker].seq);
@@ -119,7 +133,7 @@ export function TimeGraph({ agents, actions, markers, selected, focusAgent }: Pr
 
   const moveFocus = (next: number) => {
     if (next < 0 || next >= items.length) return;
-    setFocusIndex(next);
+    setFocusKey(keys[next]);
     document.getElementById(`${uid}-m-${next}`)?.focus();
   };
 
@@ -154,7 +168,7 @@ export function TimeGraph({ agents, actions, markers, selected, focusAgent }: Pr
     }
   };
 
-  const tip = active !== null ? items[active] : undefined;
+  const tip = active !== -1 ? items[active] : undefined;
 
   return (
     <div className="tg">
@@ -170,7 +184,7 @@ export function TimeGraph({ agents, actions, markers, selected, focusAgent }: Pr
           prompt
         </span>
       </div>
-      <div ref={ref} className="tg-plot" style={{ height }} onPointerLeave={() => setActive(null)}>
+      <div ref={ref} className="tg-plot" style={{ height }} onPointerLeave={() => setActiveKey(null)}>
         {width > 0 && (
           <svg width={width} height={height} role="group" aria-label="Tool calls over time, one lane per agent">
             <defs>
@@ -246,19 +260,19 @@ export function TimeGraph({ agents, actions, markers, selected, focusAgent }: Pr
                 tabIndex: index === current ? 0 : -1,
                 role: "link",
                 "aria-label": describe(item),
-                onPointerEnter: () => setActive(index),
+                onPointerEnter: () => setActiveKey(keys[index]),
                 onFocus: () => {
-                  setFocusIndex(index);
-                  setActive(index);
+                  setFocusKey(keys[index]);
+                  setActiveKey(keys[index]);
                 },
-                onBlur: () => setActive(null),
+                onBlur: () => setActiveKey(null),
                 onClick: () => router.push(hrefOf(item)),
                 onKeyDown: (e: KeyboardEvent) => onKey(e, index),
               };
               if (item.kind === "marker") {
                 const m = markers[item.marker];
                 return (
-                  <g key={`m${item.marker}`} className={`tg-mark tg-marker-${m.kind}`} {...common}>
+                  <g key={keys[index]} className={`tg-mark tg-marker-${m.kind}`} {...common}>
                     <rect x={item.x - 4} y={top} width={8} height={LANE_H} className="tg-hit" />
                     {m.kind === "prompt" ? (
                       <>
@@ -275,7 +289,7 @@ export function TimeGraph({ agents, actions, markers, selected, focusAgent }: Pr
               const h = Math.min(MARK_MAX, n === 1 ? (item.counts[0][0] === "error" ? 18 : MARK_H) : MARK_H + 2.5 * Math.log2(n));
               let y = top + LANE_H / 2 + h / 2;
               return (
-                <g key={`b${item.agent}-${item.x}`} className="tg-mark" {...common}>
+                <g key={keys[index]} className="tg-mark" {...common}>
                   <rect x={item.x} y={top} width={BIN} height={LANE_H} className="tg-hit" />
                   {item.counts.map(([band, count]) => {
                     const sh = Math.max(1, (h * count) / n);
