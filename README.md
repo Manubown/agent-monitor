@@ -216,7 +216,7 @@ These ideas come from the research behind this alpha. Tell us which ones matter 
 - Prices that change by date, and weekly subscription windows.
 - OpenTelemetry (GenAI) export for teams that already run Langfuse, Phoenix or Grafana.
 
-**Known limitations in this alpha:** Codex tool calls are checked against the documented format only. Nested omp subagent links are tested only on synthetic data. Cells in the activity heatmap don't link to sessions yet. The Windows and Intel-macOS prebuilt addons are built but not tested.
+**Known limitations in this alpha:** Codex tool calls are checked against the documented format only. Nested omp subagent links are tested only on synthetic data. Cells in the activity heatmap don't link to sessions yet. The Intel-macOS prebuilt addon is built but not tested.
 
 ## Feedback
 
