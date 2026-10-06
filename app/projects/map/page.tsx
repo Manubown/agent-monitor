@@ -11,13 +11,12 @@ import { projectMapHref } from "../../components/projects/links";
 import { type ColorMode, fillFor, Treemap, TreemapLegend } from "../../components/projects/Treemap";
 import { Empty, Tile } from "../../components/ui";
 import { ago, integer, project } from "../../lib/format";
+import { first } from "../../lib/params";
 import { filtersFrom, RANGES, ready, type SearchParams } from "../../lib/server";
 import "../../projects.css";
 
 /** Rows in the hot files table. */
 const HOT_FILES = 50;
-
-const one = (v: string | string[] | undefined): string | undefined => (Array.isArray(v) ? v[0] : v) || undefined;
 
 export default async function ProjectMapPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const params = await searchParams;
@@ -27,10 +26,10 @@ export default async function ProjectMapPage({ searchParams }: { searchParams: P
   const db = await ready();
   const map = projectMap(db, cwd, f);
   const options = filterOptions(db);
-  const mode: ColorMode = one(params.color) === "source" ? "source" : "ratio";
+  const mode: ColorMode = first(params.color) === "source" ? "source" : "ratio";
   const tree = buildTree(map.files);
-  const dir = findDir(tree, one(params.dir) ?? "") ?? tree;
-  const selected = one(params.file);
+  const dir = findDir(tree, first(params.dir) ?? "") ?? tree;
+  const selected = first(params.file);
   const detail = selected ? projectFile(db, cwd, f, selected) : null;
 
   const state = { range: f.range, source: f.source, q: f.q, tag: f.tag, dir: dir.path || undefined, color: mode === "ratio" ? undefined : mode, file: selected };

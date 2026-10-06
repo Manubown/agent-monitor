@@ -4,8 +4,9 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, Env } from "../src/core/adapter";
-import { archivePath } from "../src/ingest/archive";
-import { syncAll } from "../src/ingest/sync";
+import { fileOps } from "../src/core/activity";
+import { archivePath, writeArchive } from "../src/ingest/archive";
+import { clipToolInput, syncAll } from "../src/ingest/sync";
 import { DEFAULT_PRICES } from "../src/core/pricing";
 import type { IndexDoc, SearchIndex } from "../src/search/native";
 import { type Db, openDb } from "../src/store/db";
@@ -295,5 +296,215 @@ describe("archive and incremental sync", () => {
     await syncAll(ctx.db, { env: ctx.env, prices: DEFAULT_PRICES, full: true });
     expect(getSession(ctx.db, "codex:ccc333")?.session.filePath).toBe(moved);
     expect(userTexts(ctx.db)).toContain("after the move");
+  });
+});
+
+/** Logs with one user message per line after the first, which holds the session id; an empty log parses to nothing. */
+function lineAdapter(dir: string): Adapter {
+  return {
+    id: "fake",
+    label: "Fake",
+    roots: () => [dir],
+    match: (p) => p.endsWith(".log"),
+    parse: (_p, content) => {
+      const [id, ...rest] = content.split("\n").filter(Boolean);
+      if (!id) return null;
+      const events = rest.map((text, i) => ({ ts: 1000 + i, kind: "user" as const, text }));
+      return { source: "fake", nativeId: id, cwd: "/work/fake", startedAt: 1000, endedAt: 1000 + rest.length, events, usage: [] };
+    },
+  };
+}
+
+describe("archive copies and listing", () => {
+  let db: Db;
+  let live: string;
+  let archiveDir: string;
+  beforeEach(() => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "am-archive-sync-"));
+    live = path.join(dir, "live");
+    fs.mkdirSync(live);
+    archiveDir = path.join(dir, "archive");
+    db = openDb(":memory:");
+  });
+  const sync = (options: { full?: boolean; archive?: boolean } = {}, on: Db = db) =>
+    syncAll(on, { env: {}, adapters: [lineAdapter(live)], prices: DEFAULT_PRICES, archiveDir, ...options });
+  const archived = (file: string) => gunzipSync(fs.readFileSync(archivePath(archiveDir, "fake", file)));
+  const fileRow = (file: string) =>
+    ({ ...(db.prepare("SELECT archived_size AS size, archived_gz_size AS gzSize FROM files WHERE path = ?").get(file) as { size: number; gzSize: number }) });
+
+  it("appends a grown log's new bytes to its copy, and rewrites it when the prefix or the .gz changed", async () => {
+    const log = path.join(live, "a.log");
+    fs.writeFileSync(log, "a\none\n");
+    await sync();
+    const gz1 = fs.readFileSync(archivePath(archiveDir, "fake", log));
+
+    fs.appendFileSync(log, "two\n");
+    await sync();
+    const gz2 = fs.readFileSync(archivePath(archiveDir, "fake", log));
+    expect(gz2.length).toBeGreaterThan(gz1.length);
+    expect(gz2.subarray(0, gz1.length).equals(gz1)).toBe(true);
+    expect(archived(log).equals(fs.readFileSync(log))).toBe(true);
+    expect(fileRow(log)).toEqual({ size: fs.statSync(log).size, gzSize: gz2.length });
+
+    // A torn earlier append: the .gz is not the size we left it at, so it is rewritten whole.
+    fs.appendFileSync(archivePath(archiveDir, "fake", log), Buffer.from([0x1f, 0x8b, 0x08]));
+    fs.appendFileSync(log, "three\n");
+    expect((await sync()).errors).toEqual([]);
+    expect(archived(log).equals(fs.readFileSync(log))).toBe(true);
+
+    // An earlier line rewritten in place.
+    fs.writeFileSync(log, "a\nONE\ntwo\nthree\nfour\n");
+    await sync();
+    expect(archived(log).toString()).toBe("a\nONE\ntwo\nthree\nfour\n");
+    expect(sessionEvents(db, "fake:a").map((e) => e.text)).toEqual(["ONE", "two", "three", "four"]);
+  });
+
+  it("lists the archive on a database's first sync, with full or an explicit archive pass, or while it knows no files", async () => {
+    const log = path.join(live, "a.log");
+    fs.writeFileSync(log, "a\none\n");
+    await sync();
+    // Copies that appear later (e.g. restored from a backup) wait for the next listing.
+    await writeArchive(archiveDir, "fake", path.join(live, "b.log"), Buffer.from("b\nold\n"));
+    await sync();
+    expect(getSession(db, "fake:b")).toBeNull();
+    await sync({ archive: true });
+    expect(getSession(db, "fake:b")).not.toBeNull();
+    await writeArchive(archiveDir, "fake", path.join(live, "c.log"), Buffer.from("c\nold\n"));
+    await sync();
+    expect(getSession(db, "fake:c")).toBeNull();
+    await sync({ full: true });
+    expect(getSession(db, "fake:c")).not.toBeNull();
+
+    // Deleted live logs are still flagged on every sync, without listing the archive.
+    fs.rmSync(log);
+    await sync();
+    expect(syncStatus(db).missing).toBe(3);
+    expect(getSession(db, "fake:a")).not.toBeNull();
+
+    // A database without files lists the archive every time, so it fills as soon as copies appear.
+    const empty = openDb(":memory:");
+    archiveDir = path.join(path.dirname(live), "archive-2");
+    fs.rmSync(live, { recursive: true });
+    await sync({}, empty);
+    await writeArchive(archiveDir, "fake", path.join(live, "d.log"), Buffer.from("d\nold\n"));
+    await sync({}, empty);
+    expect(getSession(empty, "fake:d")).not.toBeNull();
+  });
+
+  it("records an unreadable archive copy and skips it until the copy changes", async () => {
+    const lost = path.join(live, "z.log");
+    const target = archivePath(archiveDir, "fake", lost);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "not gzip");
+    const first = await sync();
+    expect(first.errors.map((e) => [e.path, e.error.startsWith("unreadable archive copy: ")])).toEqual([[target, true]]);
+    expect(syncStatus(db).errors.map((e) => e.path)).toEqual([lost]);
+
+    expect((await sync({ archive: true })).errors).toEqual([]);
+    expect((await sync({ full: true })).errors).toEqual([]);
+
+    await writeArchive(archiveDir, "fake", lost, Buffer.from("z\nrecovered\n"));
+    const fixed = await sync({ archive: true });
+    expect(fixed.errors).toEqual([]);
+    expect(sessionEvents(db, "fake:z").map((e) => e.text)).toEqual(["recovered"]);
+    expect(syncStatus(db).errors).toEqual([]);
+  });
+
+  it("keeps the fuller of two archived-only copies of one session, whatever the read order", async () => {
+    const pick = async (copies: Record<string, string>) => {
+      const fresh = openDb(":memory:");
+      archiveDir = fs.mkdtempSync(path.join(os.tmpdir(), "am-archive-dup-"));
+      for (const [name, content] of Object.entries(copies)) await writeArchive(archiveDir, "fake", path.join(live, name), Buffer.from(content));
+      await sync({}, fresh);
+      const first = path.basename(getSession(fresh, "fake:dup")!.session.filePath);
+      await sync({ full: true }, fresh);
+      expect(path.basename(getSession(fresh, "fake:dup")!.session.filePath)).toBe(first);
+      return first;
+    };
+    expect(await pick({ "x1.log": "dup\n1\n2\n3\n", "x2.log": "dup\n1\n" })).toBe("x1.log");
+    expect(await pick({ "x1.log": "dup\n1\n", "x2.log": "dup\n1\n2\n3\n" })).toBe("x2.log");
+    // Equal copies: the path that sorts first.
+    expect(await pick({ "x1.log": "dup\n1\n", "x2.log": "dup\n2\n" })).toBe("x1.log");
+  });
+
+  it("reports every session it wrote or deleted, with its directory", async () => {
+    const log = path.join(live, "a.log");
+    fs.writeFileSync(log, "a\none\n");
+    expect((await sync()).changed).toEqual([{ id: "fake:a", cwd: "/work/fake" }]);
+    expect((await sync()).changed).toEqual([]);
+    fs.appendFileSync(log, "two\n");
+    expect((await sync()).changed).toEqual([{ id: "fake:a", cwd: "/work/fake" }]);
+    // The log now parses to nothing: its session is deleted.
+    fs.writeFileSync(log, "");
+    const r = await sync();
+    expect(r.changed).toEqual([{ id: "fake:a", cwd: "/work/fake" }]);
+    expect(getSession(db, "fake:a")).toBeNull();
+  });
+});
+
+describe("clipped tool input", () => {
+  const MAX = 6_000;
+  const body = (n: number) => Array.from({ length: n }, (_, i) => `+  const line${i} = ${JSON.stringify("synthetic ".repeat(4))};`).join("\n");
+  const patch = [
+    "*** Begin Patch",
+    ...Array.from({ length: 12 }, (_, i) => [`*** Update File: src/file${i}.ts`, "@@", body(40)].join("\n")),
+    "*** Add File: src/new.ts",
+    body(60),
+    "*** Delete File: src/old.ts",
+    "*** Update File: src/from.ts",
+    "*** Move to: src/to.ts",
+    body(30),
+    "*** End Patch",
+  ].join("\n");
+  const write = JSON.stringify({ file_path: "/work/src/big.ts", content: body(2000) });
+
+  it("keeps JSON valid with every key, and every file a patch or edit names", () => {
+    const cases: [string, string][] = [
+      ["Write", write],
+      ["apply_patch", JSON.stringify({ input: patch })],
+      ["apply_patch", patch], // Codex custom tool: the raw patch, not JSON
+      ["shell", JSON.stringify({ command: ["apply_patch", patch], workdir: "/work" })],
+      ["edit", JSON.stringify({ input: `[src/a.ts#1A2B]\n${body(200)}\n[src/b.ts#3C4D]\nREM\n[src/c.ts#9F00]\nMV src/d.ts\n${body(50)}` })],
+    ];
+    for (const [tool, input] of cases) {
+      expect(input.length).toBeGreaterThan(MAX);
+      const clipped = clipToolInput(input, MAX)!;
+      expect(clipped.length).toBeLessThanOrEqual(MAX);
+      expect(clipped).toContain("… [truncated ");
+      if (input.startsWith("{")) expect(Object.keys(JSON.parse(clipped))).toEqual(Object.keys(JSON.parse(input)));
+      const ops = fileOps(tool, input, "/work");
+      expect(ops.length).toBeGreaterThan(0);
+      expect(fileOps(tool, clipped, "/work")).toEqual(ops);
+    }
+    expect(fileOps("apply_patch", JSON.stringify({ input: patch }), "/work")).toHaveLength(15);
+  });
+
+  it("stores the clipped input so file tracking still sees big writes and patches", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "am-clip-"));
+    const adapter: Adapter = {
+      id: "fake",
+      label: "Fake",
+      roots: () => [dir],
+      match: (p) => p.endsWith(".log"),
+      parse: () => ({
+        source: "fake",
+        nativeId: "clip",
+        cwd: "/work",
+        startedAt: 1,
+        endedAt: 2,
+        events: [
+          { ts: 1, kind: "tool_call", toolName: "Write", toolCallId: "w", toolInput: write },
+          { ts: 2, kind: "tool_call", toolName: "apply_patch", toolCallId: "p", toolInput: JSON.stringify({ input: patch }) },
+        ],
+        usage: [],
+      }),
+    };
+    fs.writeFileSync(path.join(dir, "a.log"), "x");
+    const db = openDb(":memory:");
+    await syncAll(db, { env: {}, adapters: [adapter], prices: DEFAULT_PRICES, archiveDir: path.join(dir, "archive") });
+    const [w, p] = sessionEvents(db, "fake:clip");
+    expect(w.toolInput!.length).toBeLessThanOrEqual(MAX);
+    expect(fileOps(w.toolName, w.toolInput, "/work")).toEqual(fileOps("Write", write, "/work"));
+    expect(fileOps(p.toolName, p.toolInput, "/work").map((o) => o.op)).toEqual([...Array(12).fill("edit"), "write", "delete", "move"]);
   });
 });

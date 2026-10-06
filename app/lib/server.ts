@@ -2,13 +2,10 @@ import { syncAll, type SyncResult } from "../../src/ingest/sync";
 import { openSearchIndex, type SearchIndex } from "../../src/search/native";
 import { type Db, defaultDbPath, openDb, siblingPath } from "../../src/store/db";
 import type { Filters } from "../../src/store/queries";
+import { changeSummary, type SyncEvent, type SyncHealth } from "./live";
+import { first } from "./params";
 
-export interface SyncEvent {
-  at: number;
-  generation: number;
-  /** Sessions written by this sync. */
-  changed: number;
-}
+export type { SyncEvent, SyncHealth } from "./live";
 
 /**
  * Process-wide state lives on globalThis so the instrumentation hook, route
@@ -22,6 +19,8 @@ interface State {
   indexError?: string;
   running?: Promise<SyncResult>;
   last?: SyncResult & { at: number };
+  /** The last sync threw; cleared by the next successful one. */
+  failure?: { message: string; at: number };
   timer?: NodeJS.Timeout;
   listeners?: Set<(e: SyncEvent) => void>;
 }
@@ -68,19 +67,93 @@ export function runSync(full = false): Promise<SyncResult> {
       const index = getIndex();
       return syncAll(getDb(), { full, index: index.ok ? index.index : undefined });
     })
-    .then((result) => {
-      const at = Date.now();
-      state.last = { ...result, at };
-      for (const listener of listeners) listener({ at, generation: result.generation, changed: result.sessions });
-      return result;
-    })
+    .then(
+      (result) => {
+        const at = Date.now();
+        state.last = { ...result, at };
+        state.failure = undefined;
+        emit({ at, generation: result.generation, ...changeSummary(result.changed, ancestorIds), health: syncHealth() });
+        return result;
+      },
+      (error: unknown) => {
+        const at = Date.now();
+        state.failure = { message: error instanceof Error ? error.message : String(error), at };
+        emit({ at, generation: state.last?.generation ?? null, changed: 0, sessions: [], cwds: [], health: syncHealth() });
+        throw error;
+      },
+    )
     .finally(() => {
       state.running = undefined;
     });
   return state.running;
 }
 
+function emit(e: SyncEvent): void {
+  for (const listener of listeners) {
+    try {
+      listener(e);
+    } catch (error) {
+      console.error("[agent-monitor] live listener failed", error);
+    }
+  }
+}
+
+/** Every ancestor of the given sessions (parent, grandparent, …), so a subagent's write refreshes the pages of its tree. */
+function ancestorIds(ids: string[]): string[] {
+  const rows = getDb()
+    .prepare(
+      `WITH RECURSIVE up(id, depth) AS (
+         SELECT s.parent_id, 1 FROM sessions s WHERE s.id IN (SELECT value FROM json_each(?)) AND s.parent_id IS NOT NULL
+         UNION ALL
+         SELECT s.parent_id, up.depth + 1 FROM sessions s JOIN up ON s.id = up.id WHERE s.parent_id IS NOT NULL AND up.depth < 64)
+       SELECT DISTINCT id FROM up`,
+    )
+    .all(JSON.stringify(ids)) as { id: string }[];
+  return rows.map((r) => r.id);
+}
+
 export const lastSync = () => state.last;
+
+/** Whether a sync is in progress right now. */
+export const syncRunning = (): boolean => state.running !== undefined;
+
+/**
+ * What the top bar reports: a failed last sync, why search is unavailable or behind, and the file counts (computed
+ * once per sync for the live event, so one aggregate query).
+ */
+export function syncHealth(): SyncHealth {
+  const indexUpdate = state.last?.indexError;
+  return {
+    files: fileCounts(),
+    syncError: state.failure ? { ...state.failure } : null,
+    searchError: state.indexError
+      ? { message: state.indexError, unavailable: true }
+      : indexUpdate
+        ? { message: `The search index could not be updated: ${indexUpdate.replace(/\.$/, "")}. A later sync rebuilds it.`, unavailable: false }
+        : null,
+  };
+}
+
+/** Stored, deleted (by their tool) and failed log files, as `syncStatus` counts them; null when the database is unavailable. */
+function fileCounts(): SyncHealth["files"] {
+  try {
+    const r = getDb()
+      .prepare("SELECT COUNT(*) AS files, COALESCE(SUM(missing), 0) AS missing, COUNT(error) AS errors FROM files")
+      .get() as { files: number; missing: number; errors: number };
+    return { files: r.files, missing: r.missing, errors: r.errors };
+  } catch {
+    return null;
+  }
+}
+
+/** Log files stored so far: the import progress shown while the first sync runs. Null when the database is unavailable. */
+export function storedFiles(): number | null {
+  try {
+    return (getDb().prepare("SELECT COUNT(*) AS n FROM files").get() as { n: number }).n;
+  } catch {
+    return null;
+  }
+}
 
 /** Subscribe to sync completions (live updates). Returns the unsubscribe function. */
 export function onSync(listener: (e: SyncEvent) => void): () => void {
@@ -117,16 +190,14 @@ export const RANGES = [
 
 export const DEFAULT_RANGE = "30d";
 
-const one = (v: string | string[] | undefined): string | undefined => (Array.isArray(v) ? v[0] : v) || undefined;
-
 export function filtersFrom(params: SearchParams): Filters & { range: string } {
-  const range = RANGES.find((r) => r.id === one(params.range)) ?? RANGES.find((r) => r.id === DEFAULT_RANGE)!;
+  const range = RANGES.find((r) => r.id === first(params.range)) ?? RANGES.find((r) => r.id === DEFAULT_RANGE)!;
   return {
     range: range.id,
     from: range.ms ? Date.now() - range.ms : undefined,
-    source: one(params.source),
-    cwd: one(params.project),
-    q: one(params.q),
-    tag: one(params.tag),
+    source: first(params.source),
+    cwd: first(params.project),
+    q: first(params.q),
+    tag: first(params.tag),
   };
 }

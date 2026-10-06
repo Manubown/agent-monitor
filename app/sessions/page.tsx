@@ -5,6 +5,7 @@ import { filterOptions, isActive, isSessionSort, listSessions, type SessionSort 
 import { FilterBar } from "../components/FilterBar";
 import { Cost, Empty, ExportLinks, SourceBadge, TagList } from "../components/ui";
 import { dateTime, duration, integer, project, tokens } from "../lib/format";
+import { positiveInt } from "../lib/params";
 import { filtersFrom, RANGES, ready, type SearchParams } from "../lib/server";
 
 const PAGE_SIZE = 50;
@@ -23,11 +24,14 @@ export default async function SessionsPage({ searchParams }: { searchParams: Pro
   const params = await searchParams;
   const f = filtersFrom(params);
   const sort: SessionSort = isSessionSort(params.sort) ? params.sort : "recent";
-  const page = Math.max(1, Number(params.page) || 1);
+  const requested = positiveInt(params.page);
   const db = await ready();
-  const { rows, total } = listSessions(db, f, { limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }, sort);
-  const options = filterOptions(db);
+  let { rows, total } = listSessions(db, f, { limit: PAGE_SIZE, offset: (requested - 1) * PAGE_SIZE }, sort);
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  // Past the end (a stale link after sessions were deleted, a hand-edited URL): show the last page instead of nothing.
+  const page = Math.min(requested, pages);
+  if (page !== requested) ({ rows, total } = listSessions(db, f, { limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }, sort));
+  const options = filterOptions(db);
   const now = Date.now();
   const current = { range: f.range, source: f.source, project: f.cwd, q: f.q, tag: f.tag, sort: sort === "recent" ? undefined : sort };
   const href = (changes: Record<string, string | undefined>) => {

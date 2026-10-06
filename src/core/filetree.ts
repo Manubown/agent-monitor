@@ -35,7 +35,7 @@ export type TreeNode = TreeFile | TreeDir;
 
 export const touches = (c: TreeCounts): number => c.reads + c.changes;
 
-/** Segments of a display path; an absolute path starts with the segment `/`. */
+/** Segments of a display path; an absolute path starts with the segment `/`, a Windows one with its drive (`C:`). */
 export function splitPath(p: string): string[] {
   const parts = p.split("/").filter((s) => s && s !== ".");
   return p.startsWith("/") ? ["/", ...parts] : parts;

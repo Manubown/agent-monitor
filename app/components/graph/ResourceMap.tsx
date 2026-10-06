@@ -7,6 +7,7 @@ import { clock, integer } from "../../lib/format";
 import { agentColor, CATEGORY_COLOR, eventHref } from "./categories";
 import { RangeBrush } from "./RangeBrush";
 import { KIND_OF_RESOURCE, MAP_KIND_LABEL, MAP_KINDS, type MapFilters, type MapKind, mapQuery, passes } from "./mapFilters";
+import { actionKey, agentIndex, agentKey, catalogKeys, indexOf, isChanged } from "./selection";
 import "../../graph.css";
 import "../../resource-map.css";
 
@@ -17,6 +18,8 @@ interface Props {
 
 /** One file or resource; files come first, resource `r` is node `files.length + r`. */
 interface CatalogNode {
+  /** Stable across live refreshes (see `catalogKeys`); rows are keyed `n:<key>`. */
+  key: string;
   kind: MapKind;
   file: boolean;
   /** Full name: file path, command head, URL, pattern, agent title, tool name. */
@@ -29,6 +32,7 @@ interface CatalogNode {
 }
 
 interface CatalogGroup {
+  /** `<kind>:<label>`, stable; collapsed state and group rows (`g:<key>`) use it. */
   key: string;
   kind: MapKind;
   label: string;
@@ -75,13 +79,6 @@ interface Edge {
   calls: number;
   errors: number;
   cat: ActionCategory;
-}
-
-interface Selection {
-  key: string;
-  label: string;
-  kind: MapKind;
-  nodes: number[];
 }
 
 const PAD = 10;
@@ -135,7 +132,8 @@ export function ResourceMap({ data, initial }: Props) {
   const { agents, actions, files, resources } = data;
   const [filters, setFilters] = useState(initial);
   const [hover, setHover] = useState<string | null>(null);
-  const [selection, setSelection] = useState<Selection | null>(null);
+  /** Key of the selected row (`n:<node key>` or `g:<group key>`); its nodes, kind and title are looked up again on every render. */
+  const [selection, setSelection] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [width, setWidth] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
@@ -193,22 +191,20 @@ export function ResourceMap({ data, initial }: Props) {
       }
       return g;
     };
+    const keys = catalogKeys(files, resources, agents);
     for (const f of files) {
       const group = groupOf("files", f.dir ? `${f.dir}/` : "./");
-      nodes.push({ kind: "files", file: true, label: f.path, short: f.path.slice(f.path.lastIndexOf("/") + 1) || f.path, group, actions: f.actions });
+      nodes.push({ key: keys[nodes.length], kind: "files", file: true, label: f.path, short: f.path.slice(f.path.lastIndexOf("/") + 1) || f.path, group, actions: f.actions });
     }
     for (const r of resources) {
       const kind = KIND_OF_RESOURCE[r.kind];
       const group = groupOf(kind, r.group);
       const short = kind === "web" && r.label.startsWith(r.group) ? r.label.slice(r.group.length) || "/" : r.label;
-      nodes.push({ kind, file: false, label: r.label, short, group, actions: r.actions });
+      nodes.push({ key: keys[nodes.length], kind, file: false, label: r.label, short, group, actions: r.actions });
     }
     nodes.forEach((n, i) => groups[n.group].nodes.push(i));
 
-    const changed = (i: number) => {
-      const f = files[i];
-      return f.writes + f.edits + f.deletes + f.moves > 0;
-    };
+    const changed = (i: number) => isChanged(files[i]);
     const calls = (g: CatalogGroup) => g.nodes.reduce((s, n) => s + nodes[n].actions.length, 0);
     const groupCalls = groups.map(calls);
     for (const g of groups) {
@@ -232,8 +228,8 @@ export function ResourceMap({ data, initial }: Props) {
     });
 
     const actionNodes = actions.map((a) => [...(a.files ?? []), ...(a.res ?? []).map((r) => files.length + r)]);
-    return { nodes, groups, order, actionNodes };
-  }, [files, resources, actions]);
+    return { nodes, groups, order, actionNodes, nodeIndex: indexOf(keys), groupIndex };
+  }, [files, resources, actions, agents]);
 
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
     const multi = catalog.groups.filter((g) => g.nodes.length > 1);
@@ -251,10 +247,7 @@ export function ResourceMap({ data, initial }: Props) {
     return out;
   });
 
-  const focus = useMemo(() => {
-    const i = filters.agent ? agents.findIndex((a) => a.id === filters.agent) : -1;
-    return i === -1 ? null : i;
-  }, [agents, filters.agent]);
+  const focus = useMemo(() => agentIndex(agents, filters.agent), [agents, filters.agent]);
 
   /** Calls per node and per (agent, node) under the time, agent, errors and changed filters; kinds apply in the layout. */
   const counted = useMemo(() => {
@@ -315,7 +308,7 @@ export function ResourceMap({ data, initial }: Props) {
       if (shown.length === 1) {
         const n = shown[0];
         const node = catalog.nodes[n];
-        push({ key: `n:${n}`, kind: g.kind, label: node.label, title: node.label, nodes: [n], calls: calls[n], errors: errors[n], group: false });
+        push({ key: `n:${node.key}`, kind: g.kind, label: node.label, title: node.label, nodes: [n], calls: calls[n], errors: errors[n], group: false });
         continue;
       }
       const isCollapsed = collapsed[g.key] === true;
@@ -330,7 +323,7 @@ export function ResourceMap({ data, initial }: Props) {
       y += HEAD;
       for (const n of shown) {
         const node = catalog.nodes[n];
-        push({ key: `n:${n}`, kind: g.kind, label: node.short, title: node.label, nodes: [n], calls: calls[n], errors: errors[n], group: false });
+        push({ key: `n:${node.key}`, kind: g.kind, label: node.short, title: node.label, nodes: [n], calls: calls[n], errors: errors[n], group: false });
       }
     }
 
@@ -376,14 +369,35 @@ export function ResourceMap({ data, initial }: Props) {
   }, [layout, scroll.r, viewH]);
   /** Many edges fade so the bundle stays readable; highlighted ones stay solid. */
   const edgeOpacity = Math.max(0.08, Math.min(0.5, 3 / Math.sqrt(Math.max(1, visibleEdges.length))));
-  const litKey = hover ?? selection?.key ?? (focus === null ? null : `a:${focus}`);
-  const isLit = (e: Edge) => litKey !== null && (litKey === `a:${e.agent}` || litKey === layout.rows[e.row].key);
+  /**
+   * The selected row in the current data: its nodes, kind and title (the row's own, else rebuilt from the catalog the
+   * same way), so a refresh never leaves a stale title such as an old file count. Null once its key is gone.
+   */
+  const selected = useMemo(() => {
+    if (!selection) return null;
+    const id = selection.slice(2);
+    const row = layout.rows.find((r) => r.key === selection);
+    if (selection.startsWith("n:")) {
+      const n = catalog.nodeIndex.get(id);
+      if (n === undefined) return null;
+      const node = catalog.nodes[n];
+      return { key: selection, nodes: [n], kind: node.kind, label: row?.title ?? node.label };
+    }
+    const g = catalog.groupIndex.get(id);
+    if (g === undefined) return null;
+    const group = catalog.groups[g];
+    const shown = group.nodes.filter((n) => counted.calls[n] > 0).length;
+    return { key: selection, nodes: group.nodes, kind: group.kind, label: row?.title ?? `${group.label} (${plural(shown, group.kind)})` };
+  }, [selection, catalog, layout, counted]);
+
+  const litKey = hover ?? selected?.key ?? (focus === null ? null : agentKey(agents, focus));
+  const isLit = (e: Edge) => litKey !== null && (litKey === agentKey(agents, e.agent) || litKey === layout.rows[e.row].key);
 
   const connected = useMemo(() => {
     if (!hover) return null;
     const on = new Set<string>([hover]);
     for (const e of layout.edges) {
-      const a = `a:${e.agent}`;
+      const a = agentKey(agents, e.agent);
       const r = layout.rows[e.row].key;
       if (hover === a || hover === r) {
         on.add(a);
@@ -391,14 +405,14 @@ export function ResourceMap({ data, initial }: Props) {
       }
     }
     return on;
-  }, [hover, layout]);
+  }, [hover, layout, agents]);
 
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return null;
     const keys: string[] = [];
     agents.forEach((a, i) => {
-      if (a.title.toLowerCase().includes(q)) keys.push(`a:${i}`);
+      if (a.title.toLowerCase().includes(q)) keys.push(agentKey(agents, i));
     });
     for (const r of layout.rows) {
       if (r.title.toLowerCase().includes(q) || r.nodes.some((n) => catalog.nodes[n].label.toLowerCase().includes(q))) keys.push(r.key);
@@ -406,8 +420,7 @@ export function ResourceMap({ data, initial }: Props) {
     return { keys, set: new Set(keys) };
   }, [query, agents, layout, catalog]);
 
-  const selectRow = (r: Row) =>
-    setSelection((cur) => (cur?.key === r.key ? null : { key: r.key, label: r.title, kind: r.kind, nodes: r.nodes }));
+  const selectRow = (r: Row) => setSelection((cur) => (cur === r.key ? null : r.key));
 
   const focusAgent = (i: number) => update({ agent: focus === i ? null : agents[i].id });
 
@@ -418,11 +431,13 @@ export function ResourceMap({ data, initial }: Props) {
   const jump = () => {
     const key = matches?.keys[0];
     if (!key) return;
-    if (key.startsWith("a:")) focusAgent(Number(key.slice(2)));
-    else {
+    if (key.startsWith("a:")) {
+      const i = agentIndex(agents, key.slice(2));
+      if (i !== null) focusAgent(i);
+    } else {
       const row = layout.rows.find((r) => r.key === key);
       if (row) {
-        setSelection({ key: row.key, label: row.title, kind: row.kind, nodes: row.nodes });
+        setSelection(row.key);
         if (row.group) setCollapsed((c) => ({ ...c, [row.key.slice(2)]: false }));
       }
     }
@@ -432,9 +447,9 @@ export function ResourceMap({ data, initial }: Props) {
   };
 
   const listed = useMemo(() => {
-    if (!selection) return [];
+    if (!selected) return [];
     const out = new Set<number>();
-    for (const n of selection.nodes) {
+    for (const n of selected.nodes) {
       const node = catalog.nodes[n];
       for (const i of node.actions) {
         const a = actions[i];
@@ -442,7 +457,7 @@ export function ResourceMap({ data, initial }: Props) {
       }
     }
     return [...out].sort((a, b) => actions[a].ts - actions[b].ts || a - b);
-  }, [selection, catalog, actions, filters, focus]);
+  }, [selected, catalog, actions, filters, focus]);
 
   const times = useMemo(() => actions.map((a) => a.ts).sort((a, b) => a - b), [actions]);
 
@@ -451,7 +466,7 @@ export function ResourceMap({ data, initial }: Props) {
     [
       base,
       connected && !connected.has(key) ? "rm-dim" : "",
-      selection?.key === key ? "rm-selected" : "",
+      selected?.key === key ? "rm-selected" : "",
       matches?.set.has(key) ? "rm-match" : "",
     ]
       .filter(Boolean)
@@ -543,7 +558,7 @@ export function ResourceMap({ data, initial }: Props) {
         </div>
       )}
 
-      <div className={selection ? "rm-body rm-body-panel" : "rm-body"}>
+      <div className={selected ? "rm-body rm-body-panel" : "rm-body"}>
         <div ref={ref} className="rm-plot">
           {width > 0 && (
             <div ref={viewRef} className="rm-view" style={{ height: viewH }} role="group" aria-label="Agents and the resources their tool calls worked on">
@@ -565,7 +580,7 @@ export function ResourceMap({ data, initial }: Props) {
                     );
                   })}
                   {agents.map((a, i) => {
-                    const key = `a:${i}`;
+                    const key = agentKey(agents, i);
                     const y = agentY(i);
                     const x = agentX(i);
                     const w = PAD + AGENT_W - x;
@@ -637,7 +652,7 @@ export function ResourceMap({ data, initial }: Props) {
                         className={nodeClass(r.key, `rm-node rm-kind-${r.kind}${r.group ? " rm-collapsed" : ""}${r.errors ? " rm-failed" : ""}`)}
                         role="button"
                         tabIndex={0}
-                        aria-pressed={selection?.key === r.key}
+                        aria-pressed={selected?.key === r.key}
                         aria-label={`${MAP_KIND_LABEL[r.kind]}: ${r.title}, ${callsText(r.calls, r.errors)}. Show the calls.`}
                         onPointerEnter={() => setHover(r.key)}
                         onPointerLeave={() => setHover(null)}
@@ -694,12 +709,12 @@ export function ResourceMap({ data, initial }: Props) {
           )}
         </div>
 
-        {selection && (
-          <aside className="rm-panel" aria-label={`Calls on ${selection.label}`}>
+        {selected && (
+          <aside className="rm-panel" aria-label={`Calls on ${selected.label}`}>
             <div className="rm-panel-head">
               <div>
-                <div className="muted">{MAP_KIND_LABEL[selection.kind]}</div>
-                <div className="mono rm-panel-title">{selection.label}</div>
+                <div className="muted">{MAP_KIND_LABEL[selected.kind]}</div>
+                <div className="mono rm-panel-title">{selected.label}</div>
                 <div className="muted">
                   {callsText(listed.length, listed.filter((i) => actions[i].error).length)}
                   {listed.length > 0 && ` · ${clock(actions[listed[0]].ts)} – ${clock(actions[listed[listed.length - 1]].ts)}`}
@@ -714,7 +729,7 @@ export function ResourceMap({ data, initial }: Props) {
                 const a = actions[i];
                 const agent = agents[a.agent];
                 return (
-                  <li key={i}>
+                  <li key={actionKey(agents, a)}>
                     <Link href={eventHref(agent, a.seq)} className="rm-call">
                       <span className="ev-time">{clock(a.ts)}</span>
                       <span className="tool-name">

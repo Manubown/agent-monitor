@@ -1,4 +1,5 @@
 import { fileOps } from "./activity";
+import { slashPath } from "./paths";
 import { isShellTool, shellCommand } from "./shell";
 import type { AgentEvent } from "./types";
 
@@ -220,7 +221,8 @@ export function loopReason(loops: readonly Loop[], cwd?: string | null): string 
     if (m) m.count += l.count;
     else merged.set(key, { kind: l.kind, subject: l.subject, count: l.count, first: l.firstSeq });
   }
-  const root = cwd ? (cwd.endsWith("/") ? cwd : `${cwd}/`) : undefined;
+  const dir = cwd && slashPath(cwd);
+  const root = dir ? (dir.endsWith("/") ? dir : `${dir}/`) : undefined;
   const clip = (s: string) => (s.length > REASON_SUBJECT_MAX ? `${s.slice(0, REASON_SUBJECT_MAX - 1)}…` : s);
   const list = [...merged.values()].sort((a, b) => b.count - a.count || a.first - b.first);
   const parts = list.slice(0, REASON_MAX_LOOPS).map((l) =>

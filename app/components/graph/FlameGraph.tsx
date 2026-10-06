@@ -8,6 +8,7 @@ import type { SessionFlame } from "../../../src/store/flame";
 import { clock, duration, integer, tokens, usd } from "../../lib/format";
 import { agentColor, CATEGORIES, CATEGORY_COLOR, CATEGORY_LABEL, eventHref } from "./categories";
 import { type Band, type CostBox, callEnds, costLayout, dominantBand, issuedBy, mergeThin, packTracks, subtreeCosts, subtreeEnd } from "./flameLayout";
+import { agentIndex, agentKey, requestKeys, uniqueKeys } from "./selection";
 import { type TimeScale, timeScale, timeTicks } from "./timeScale";
 import "../../flame.css";
 
@@ -66,10 +67,13 @@ export function FlameGraph({ agents, actions, flame }: Props) {
   const [width, setWidth] = useState(0);
   const [colorBy, setColorBy] = useState<ColorBy>("tool");
   const [widthBy, setWidthBy] = useState<WidthBy>("time");
-  const [root, setRoot] = useState(0);
-  const [active, setActive] = useState<number | null>(null);
+  // Zoom, hover and keyboard focus are held by key (agent id, call seq), not index: a live refresh can insert agents and calls anywhere.
+  const [rootId, setRootId] = useState<string | null>(null);
+  const [activeKey, setActiveKey] = useState<string | null>(null);
   const [tipX, setTipX] = useState(0);
-  const [focusIndex, setFocusIndex] = useState(0);
+  const [focusKey, setFocusKey] = useState<string | null>(null);
+  /** The zoomed agent; the whole session when it is gone. */
+  const root = agentIndex(agents, rootId) ?? 0;
 
   useEffect(() => {
     const el = ref.current;
@@ -188,7 +192,26 @@ export function FlameGraph({ agents, actions, flame }: Props) {
   }, [agents, actions, flame, data, root, width, byCost]);
 
   const { items } = view;
-  const current = Math.min(focusIndex, Math.max(0, items.length - 1));
+  const reqKeys = useMemo(() => requestKeys(agents, flame.requests), [agents, flame]);
+  /**
+   * Per item, stable across refreshes and used as its React key, so a focused mark keeps its element (and keyboard
+   * focus): `a:<agent id>`, or the agent id and the first call's seq, or the first request's key (see `requestKeys`).
+   */
+  const keys = useMemo(
+    () =>
+      uniqueKeys(
+        items.map((item) => {
+          const agent = agentKey(agents, item.agent);
+          if (item.kind === "agent") return agent;
+          if (item.kind === "calls") return `${agent}\nc${actions[item.items[0]].seq}`;
+          return reqKeys[item.items[0]];
+        }),
+      ),
+    [items, agents, actions, reqKeys],
+  );
+  const find = (key: string | null) => (key === null ? -1 : keys.indexOf(key));
+  const current = Math.max(0, find(focusKey));
+  const active = find(activeKey);
 
   useEffect(() => {
     if (!refocus.current) return;
@@ -206,9 +229,9 @@ export function FlameGraph({ agents, actions, flame }: Props) {
 
   const zoom = (next: number) => {
     if (next === root) return;
-    setRoot(next);
-    setActive(null);
-    setFocusIndex(0);
+    setRootId(next === 0 ? null : agents[next].id);
+    setActiveKey(null);
+    setFocusKey(null);
     refocus.current = true;
   };
 
@@ -222,7 +245,7 @@ export function FlameGraph({ agents, actions, flame }: Props) {
 
   const moveFocus = (next: number) => {
     if (next < 0 || next >= items.length) return;
-    setFocusIndex(next);
+    setFocusKey(keys[next]);
     document.getElementById(`${uid}-i-${next}`)?.focus();
   };
 
@@ -284,7 +307,7 @@ export function FlameGraph({ agents, actions, flame }: Props) {
   const crumbs: number[] = [];
   for (let i: number | null = root; i !== null; i = agents[i].parent) crumbs.unshift(i);
 
-  const tip = active !== null ? items[active] : undefined;
+  const tip = active !== -1 ? items[active] : undefined;
   const legend: ReactNode = shadeByCost ? (
     <>
       <span>
@@ -340,7 +363,7 @@ export function FlameGraph({ agents, actions, flame }: Props) {
             disabled={!priced}
             onChange={(v) => {
               setWidthBy(v);
-              setActive(null);
+              setActiveKey(null);
             }}
           />
         </div>
@@ -363,7 +386,7 @@ export function FlameGraph({ agents, actions, flame }: Props) {
           </Link>
         </nav>
       )}
-      <div ref={ref} className="fg-plot" style={{ height: view.height }} onPointerLeave={() => setActive(null)}>
+      <div ref={ref} className="fg-plot" style={{ height: view.height }} onPointerLeave={() => setActiveKey(null)}>
         {width > 0 && (
           <svg
             width={width}
@@ -404,22 +427,22 @@ export function FlameGraph({ agents, actions, flame }: Props) {
                   role: item.kind === "agent" ? "button" : "link",
                   "aria-label": describe(item),
                   onPointerEnter: (e: PointerEvent) => {
-                    setActive(index);
+                    setActiveKey(keys[index]);
                     setTipX(e.clientX - (ref.current?.getBoundingClientRect().left ?? 0));
                   },
                   onFocus: () => {
-                    setFocusIndex(index);
-                    setActive(index);
+                    setFocusKey(keys[index]);
+                    setActiveKey(keys[index]);
                     setTipX((item.x0 + item.x1) / 2);
                   },
-                  onBlur: () => setActive(null),
+                  onBlur: () => setActiveKey(null),
                   onClick: () => activate(item),
                   onKeyDown: (e: KeyboardEvent) => onKey(e, index),
                 };
                 if (item.kind !== "agent") {
                   const failed = !shadeByCost && item.kind === "calls" && item.items.some((a) => actions[a].error);
                   return (
-                    <g key={`${item.kind}${item.agent}-${item.items[0]}`} className={failed ? "fg-block fg-failed" : "fg-block"} {...common}>
+                    <g key={keys[index]} className={failed ? "fg-block fg-failed" : "fg-block"} {...common}>
                       <rect x={item.x0} y={item.y} width={w} height={item.h} fill={fillOf(item)} shapeRendering="crispEdges" />
                     </g>
                   );
@@ -431,7 +454,7 @@ export function FlameGraph({ agents, actions, flame }: Props) {
                   w - 10,
                 );
                 return (
-                  <g key={`a${item.agent}`} className={item.agent === root ? "fg-agent fg-root" : "fg-agent"} {...common}>
+                  <g key={keys[index]} className={item.agent === root ? "fg-agent fg-root" : "fg-agent"} {...common}>
                     <rect x={item.x0} y={item.y} width={w} height={item.h} fill={fillOf(item)} className="fg-bar" shapeRendering="crispEdges" />
                     {!shadeByCost && <rect x={item.x0} y={item.y} width={Math.min(3, w)} height={item.h} fill={agentColor(a)} shapeRendering="crispEdges" />}
                     {label && (

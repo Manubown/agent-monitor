@@ -1,43 +1,50 @@
 # Improvements and ideas
 
 Backlog from the code review of 0.1.0-alpha.1 (2026-10-06). The eight most urgent findings are fixed in 0.1.0-alpha.2
-(see [CHANGELOG.md](../CHANGELOG.md)); everything below is still open. File references are as of that
-review. Marked *unverified* where the finding was inferred rather than reproduced.
+(see [CHANGELOG.md](../CHANGELOG.md)); everything below is still open unless ticked. File references are as of that
+review. Marked *unverified* where the finding was inferred rather than reproduced. Feature ideas also collect
+requests from use (the "Dashboard and charts" section, added 2026-10-06).
 
 ## Things to improve
 
 ### Windows
 
-- [ ] **Analysis views treat paths as POSIX** (`src/core/activity.ts:40-46`, `src/store/activity.ts:208-216`, `src/core/filetree.ts:39-42`). `C:\…` is not absolute to `path.posix`, so the file tree and project map come out flat, `displayPath` never shortens, and `src\a.ts` plus its absolute form count as two files. Fix: one helper that turns `\` into `/`, treats `^[A-Za-z]:/` as absolute and case-folds the drive letter; Windows fixtures.
+- [x] **Analysis views treat paths as POSIX**: fixed with `src/core/paths.ts` (slash form, upper-case drive letter) and Windows fixtures. Follow-up: only the drive letter is case-folded, so `C:\Users\Me\x` and `C:\users\me\x` still count as two files.
 - [ ] **Resume command is POSIX shell** (`src/core/adapter.ts:46-52`, shown on the session page): `cd '<C:\…>' && claude --resume …` fails in cmd.exe and Windows PowerShell 5.1. Emit `Set-Location -LiteralPath '…'; …` on win32.
 - [ ] **Archive round trip depends on the drive letter's case** (`src/ingest/archive.ts`, `originalPath`): a root spelled `c:\…` comes back as `C:\…` and would be ingested twice (*unverified*). Upper-case the drive letter, compare paths case-insensitively on win32, add a `path.win32` round-trip test.
-- [ ] **CI never runs on Windows** (`.github/workflows/ci.yml:22`). Add `windows-latest`; also the Node 22.13 floor and Node 24 (only `22.x` today).
+- [x] **CI never runs on Windows**: the matrix now has `windows-latest`, plus Node 22.13.0 and 24.x on Ubuntu.
 - [ ] **`pnpm build:native` fails while the server runs** (`scripts/build-native.mjs:80,116`): the loaded addon cannot be replaced, the error reads "download failed" and it falls back to cargo. Detect EPERM/EBUSY and tell the user to stop the server first.
+- [ ] **Stopping `pnpm demo` leaves `next dev` running** on Windows (`scripts/demo.ts`, `child.kill`): the grandchild keeps port 4200. Kill the process tree (`taskkill /T`) on win32.
 - [ ] Data lives under `%USERPROFILE%\.local\share\agent-monitor` (`src/store/db.ts:119`, `src/core/pricing.ts:56`); `%LOCALAPPDATA%` is the Windows convention. Needs a migration of the archive and `user.db`.
 
 ### Performance (matters for always-on use)
 
-- [ ] **Sync re-processes whole files** (`src/ingest/sync.ts`, live loop): any growth re-reads, re-gzips and re-parses the entire log and recomputes hashes, auto-tags and usage, on the Next server's event loop every 5 s. Keep a byte offset and parser state per append-only log, append gzip members to the archive, run sync in a worker.
-- [ ] **Every sync walks all roots and lists the whole archive** (`listArchive`). List the archive only at startup or with `--full`; consider `fs.watch` plus a periodic full scan.
-- [ ] **Missing indexes** (`src/store/db.ts:60-77`): nothing on `events(ts, session_id, kind)` or `sessions(cwd)`, so the overview, heatmap, timeline and `byTool` scan the largest table on every render. Needs a `SCHEMA_VERSION` bump.
-- [ ] **Projects cache keyed on the database generation** (`src/store/projects.ts:125-139,351-352`), which changes every 5 s while an agent works, so `/projects` re-parses every project's file operations. Cache per session keyed by `events_hash`.
-- [ ] **Every write refreshes every open page** (`app/components/client.tsx:130-134`, `app/lib/server.ts` listeners): the sync event carries only a count. Send the changed session ids and cwds and refresh only affected pages; memoize the session analyses per (id, generation).
-- [ ] **One `EventSource` per tab, hidden or not** (`app/components/client.tsx:114,140`): with about 6 tabs the HTTP/1.1 connection limit stalls navigation and search. Close the stream while hidden (the `hello` generation check already catches up).
-- [ ] **The root layout waits for the first full sync** (`app/layout.tsx:31`): a fresh install with GBs of logs shows a blank tab for minutes. Render the shell at once and stream content behind Suspense with import progress.
-- [ ] **Unbounded session page payload** (`app/sessions/[id]/page.tsx:311,469`): `SessionActivity` receives `resources` it never uses, and "Show earlier" grows the window by 200 events per click without a cap.
+- [ ] **Sync re-parses whole files** (`src/ingest/sync.ts`): the archive now appends a gzip member when only the tail changed, and the archive is listed only on the first sync per process. Still open: a grown log is decoded, parsed, hashed and auto-tagged in full on the Next server's event loop. Measured on a 14 MiB omp log: about 320 ms per sync (parse 105, write 66, decode 57, auto-tags 50, hashes 39 ms). The remaining fix is a byte offset plus resumable parser state per adapter, which changes the pure `parse(path, content)` contract, or running sync in a worker (needs a separate entry point next to the Next bundle).
+- [x] **Every sync lists the whole archive**: only on the first sync per database and process, with `--full`, or after a rebuild. Not done: `fs.watch` instead of walking the roots every 5 s.
+- [x] **Missing indexes**: `sessions(cwd, started_at, id)`, `sessions(ended_at)`, `events(ts, session_id)`, `events(kind, tool_name, is_error, ts, session_id)`, checked with `EXPLAIN QUERY PLAN` (full scans of `events` went from 15 to 1). The unused `events(tool_name)` index was dropped.
+- [x] **Projects cache keyed on the database generation**: parsed touches are cached per session and keyed by `events_hash`.
+- [x] **Every write refreshes every open page**: sync events carry the changed session ids (plus their ancestors) and cwds; a session page refreshes only for its own tree, a project map only for its project. Not done: memoizing session analyses per (id, generation).
+- [x] **One `EventSource` per tab, hidden or not**: the stream closes while the tab is hidden and catches up through `hello` when it is shown again.
+- [x] **The root layout waits for the first full sync**: the top bar renders at once; the content waits behind Suspense with an "Importing logs… N files" progress message.
+- [x] **Unbounded session page payload**: `SessionActivity` no longer gets `resources` or per-action `res`; the timeline shows at most 1,000 events and "Show earlier" slides the window, with "Jump to latest".
+- [x] **"Synced N ago" and the log counts went stale** on pages unrelated syncs no longer refresh: the time is rendered client-side, and file, deleted and failed counts refresh the top bar on any page. Back and Forward refresh once when a skipped sync could have changed the cached page. Still open: the session page's "Active" badge is time-based and only updates with the page's own changes.
 
 ### Correctness and robustness
 
-- [ ] **Clipped tool input breaks file tracking** (`MAX_TOOL_TEXT` in `src/ingest/sync.ts`, `src/core/activity.ts:82-92,113-115`): clipping at 6,000 characters makes the JSON invalid, so large omp edits and `apply_patch` calls lose their file operations in activity, turns, project map and loops. Extract file operations before clipping, or clip inside string values.
-- [ ] **Two recursive CTEs lack the depth guard** (`src/store/queries.ts:395,483`) every other tree query has; a parent cycle in a malformed log would hang the server (*unverified*).
-- [ ] **Selections stored as array indices** (`app/components/graph/SessionActivity.tsx:20-24`, NodeGraph, ResourceMap, FlameGraph `root`): a live refresh that adds a file in an earlier subagent shifts them, and the panel shows another file's calls. Key by path or agent id.
-- [ ] **`decodeURIComponent` on the URL hash** (`app/components/search/TargetEvent.tsx:29-35`) throws on `#e-%`; it runs in the root layout, which `app/error.tsx` does not cover. Wrap it in try/catch; consider `app/global-error.tsx`.
-- [ ] **Unvalidated query parameters**: `?page=1.01` (`app/sessions/page.tsx:26`), `?view=constructor` (`app/api/export/route.ts:103`), the raw `source` in `Content-Disposition`. Clamp, use `Object.hasOwn`, slug.
-- [ ] **Sync failures only reach the console** (`app/lib/server.ts`): a thrown sync or `indexError` never shows in the UI, and "synced N ago" just grows. Keep the last error in state and show it (and "search unavailable") in the top bar.
-- [ ] **Empty state on a fresh install** (`app/page.tsx:142-147`, `/projects`): "No agent activity in this range" with no hint. When there are no files, list the roots that were scanned.
-- [ ] **Corrupt archive copies are re-read every sync** (archive pass in `syncAll`): the read error is reported but not recorded, so the gunzip repeats every 5 s.
-- [ ] **Two archived-only copies of one session**: whichever the archive pass reads last wins.
-- [ ] **Legacy Codex rollouts** without the `payload` wrapper parse to nothing without an error (`src/adapters/codex.ts:141-142`, *unverified*).
+- [x] **Clipped tool input breaks file tracking**: `clipToolInput` (`src/ingest/sync.ts`) shortens long string values so stored JSON stays valid, and keeps patch and omp-edit file header lines.
+- [x] **Recursive CTEs without depth guard**: subtree walks go through `SUBTREE` (`src/store/tree.ts`), which never re-enters a session on its path, and sync breaks a parent cycle at ingest (the session that would close it is stored as a root), so cycle members also show up in the session list.
+- [x] **Selections stored as array indices**: graph selections, flame zoom, hover and focus use stable keys (`app/components/graph/selection.ts`); `FileHeat` rows are keyed by path. Still index-based: agent colors (`slot` in `src/store/activity.ts`), so an inserted subagent recolors the agents after it.
+- [x] **`decodeURIComponent` on the URL hash**: decoded safely; `app/global-error.tsx` covers the root layout.
+- [x] **Unvalidated query parameters**: `app/lib/params.ts` (strict integers, `Object.hasOwn` lookups, slugged download names) in the sessions list, export route, usage and project map; the session page clamps `at`/`from`/`to`. Minor: `filtersFrom` does not cap the length of `q`, `tag`, `source` and `project`.
+- [x] **Sync failures only reach the console**: the top bar shows a failing sync, "search unavailable" and "search behind"; "Sync now" no longer turns a failed sync into an error page.
+- [x] **Empty state on a fresh install**: the overview and `/projects` list the scanned roots and their override variables. Not done: the same on `/sessions`.
+- [x] **Corrupt archive copies are re-read every sync**: recorded and skipped until the copy changes. A damaged copy reads back every member that still decodes. When a log shrinks, the replaced copy is kept as `<copy>.<time>.prev`; the latest in-place rewrite of a growing log as `<copy>.prev`. An archived-only log whose import failed for a passing reason (a locked database) is retried.
+- [x] **Two archived-only copies of one session**: the copy with more events wins, then the later end, then the path.
+- [x] **Legacy Codex rollouts**: lines without the `payload` envelope are read (format inferred from the codex-rs history, no real legacy file tested); a file with no recognizable line now fails visibly instead of parsing to nothing.
+- [x] **Two processes syncing at once** (server plus `pnpm watch`) appending the same archive tail: an append whose .gz does not end up the expected size is redone as a full rewrite. `pnpm watch` survives a failed sync.
+- [x] **Overview `?q=`**: the search box appears when a search filters the overview, and its links keep it.
+- [ ] **`.prev` copies are never cleaned up** and are not read back by the app; they need a place in the archive health view (Feature ideas) and a retention rule.
+- [ ] **One remount after the first import** (`app/layout.tsx`): the page content is wrapped in Suspense only while importing (so unknown routes keep their 404), which resets client state once when the import ends.
 
 ### Security and privacy
 
@@ -77,6 +84,22 @@ review. Marked *unverified* where the finding was inferred rather than reproduce
 - [ ] **`npx agent-monitor` (L)**: publish to npm with a compiled CLI (`bin`, `serve` command), the prebuilt `.next`, and the addon as per-platform `optionalDependencies` (the napi-rs convention) instead of the GitHub download.
 - [ ] **Autostart (M)**: `agent-monitor service install|uninstall` registering a Task Scheduler at-logon task (Windows), a LaunchAgent (macOS) or a `systemd --user` unit (Linux), capturing `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `AGENT_MONITOR_*` and the absolute node path. Wants the sync performance items first.
 - [ ] **Opt-in update check (S)**: query GitHub releases (prereleases included) and show a banner with upgrade steps; off by default to keep the no-network promise.
+
+### Dashboard and charts
+
+- [ ] **Sessions first on the overview (S)**: the most-used thing (sessions) sits near the bottom of `app/page.tsx`, under the tiles, two charts, the heatmap, token mix, tools and models. Add a row of session cards (title, tool, project, last activity, cost, auto-tags) right under "Active now", sized to the viewport width. The next item builds on this; ship it on its own first.
+- [ ] **Modular dashboard (M)**: one widget per card instead of one 375-line page.
+  - *Registry*: `app/components/dashboard/widgets.ts` maps a stable id (`sessions`, `cost-per-day`, `heatmap`, `token-mix`, `tools`, `models`, `projects`, …) to a server component taking `(db, filters)`, a title and allowed sizes. Each widget runs only its own queries, so a hidden widget costs nothing.
+  - *Layout*: an ordered list of `{ id, w, h }` on a 12-column CSS grid. `w` is one of 3/4/6/8/12 columns and `h` is one of S/M/L row heights (presets rather than free pixel sizes). It is stored in `user.db` (a new `dashboard_layout` table, like tags, so it survives `SCHEMA_VERSION` rebuilds), and the current layout is the default. Columns collapse to full width on narrow screens.
+  - *Editing*: a "Customize" toggle shows per-card controls: move earlier or later, width and height presets, hide, add from the list, reset to default. They are keyboard accessible and saved through a server action. Drag-to-reorder (native HTML drag and drop, or `@dnd-kit` if that turns out too fiddly) is a later layer on top of the same layout model.
+  - *Not planned*: free-form drag-resize grids such as `react-grid-layout`. They turn every card into a client component, which conflicts with server components reading SQLite directly. They are hard to use from the keyboard, and pixel layouts break between window sizes.
+  - Later: several named layouts (for example "cost" and "activity"), and the same widgets on the project and session pages.
+- [ ] **Clickable bars: "what was done on this day" (M)**: today `StackedBarChart` only shows a tooltip.
+  - *Chart*: add an optional `hrefs?: string[]` prop (a link per column) and keep the component generic. Combine this with the accessibility item above: one tab stop, arrow keys move between columns, Enter opens the column, index keys.
+  - *Overview / cost and tokens per day*: clicking a day sets `?day=YYYY-MM-DD`, which keeps all state in the URL like the other filters. A panel under the chart lists that day's sessions with their title, prompts (from `src/store/turns.ts`), auto-tags, top tools and files touched, plus cost and tokens; each row links to the session. The panel ends with "All N sessions on this day →", which needs a custom `from`/`to` in `Filters` (useful on its own).
+  - *Session page / context per request* (`app/components/turns/ContextCard.tsx`): clicking a request jumps to its event in the timeline (`?at=<seq>#e-<seq>`, as `TurnsCard` already does). The tooltip shows the turn's prompt, so you can see what the agent was working on when context grew. This needs `seq` on `ContextAgent.requests`.
+  - *Errors and usage charts*: the same `hrefs`, drilling into the errors or sessions of that bucket.
+  - Related: heatmap cells linking to their sessions (above) can use the same day/hour drill-down.
 
 ### Product
 

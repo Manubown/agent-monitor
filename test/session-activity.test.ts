@@ -172,6 +172,39 @@ describe("sessionActivity", () => {
     const cats = Object.fromEntries(act.actions.map((a) => [a.ts - T, a.cat]));
     expect(cats).toMatchObject({ 0: "read", 2: "write", 6: "web", 7: "search", 21: "write" });
   });
+
+  it("lists each agent once when a malformed log makes a parent cycle", () => {
+    insertSession(db, "omp:a", { parentId: "omp:b" });
+    insertSession(db, "omp:b", { parentId: "omp:a", startedAt: T + 1 });
+    insertEvents(db, "omp:b", [{ ts: T + 2, kind: "tool_call", tool: "read", callId: "1", input: { path: "src/a.ts" } }]);
+    const act = sessionActivity(db, "omp:a", "/home/me")!;
+    expect(act.agents.map((a) => a.id)).toEqual(["omp:a", "omp:b"]);
+    expect(act.actions).toHaveLength(1);
+    expect(act.files.map((f) => [f.path, f.reads])).toEqual([["src/a.ts", 1]]);
+  });
+
+  it("counts a file once however a Windows session wrote its path", () => {
+    insertSession(db, "claude:w", { cwd: "C:\\Users\\me\\proj" });
+    insertEvents(db, "claude:w", [
+      { ts: T, kind: "tool_call", tool: "Read", callId: "1", input: { file_path: "C:\\Users\\me\\proj\\src\\a.ts" } },
+      { ts: T + 1, kind: "tool_call", tool: "Edit", callId: "2", input: { file_path: "c:\\Users\\me\\proj\\src\\a.ts", old_string: "a", new_string: "b" } },
+      { ts: T + 2, kind: "tool_call", tool: "read", callId: "3", input: { path: "src\\a.ts" } },
+      { ts: T + 3, kind: "tool_call", tool: "Read", callId: "4", input: { file_path: "C:\\Users\\me\\notes\\todo.md" } },
+      { ts: T + 4, kind: "tool_call", tool: "Read", callId: "5", input: { file_path: "D:\\data\\x.csv" } },
+      { ts: T + 5, kind: "tool_call", tool: "Read", callId: "6", input: { file_path: "C:\\Users\\me\\proj" } },
+      { ts: T + 6, kind: "tool_call", tool: "Grep", callId: "7", input: { pattern: "foo", path: "C:\\Users\\me\\proj\\src" } },
+    ]);
+    const act = sessionActivity(db, "claude:w", "C:\\Users\\me")!;
+    expect(act.files.map((f) => [f.path, f.dir, f.reads, f.edits])).toEqual([
+      ["src/a.ts", "src", 2, 1],
+      ["~/notes/todo.md", "~/notes", 1, 0],
+      ["D:/data/x.csv", "D:/data", 1, 0],
+    ]);
+    expect(act.actions[1].label).toBe("a.ts");
+    // Search scopes are resources, shown the same way as files.
+    expect(act.resources.find((r) => r.kind === "search")?.label).toContain("src");
+    expect(act.resources.find((r) => r.kind === "search")?.label).not.toContain("C:");
+  });
 });
 
 describe("helpers", () => {
@@ -196,6 +229,11 @@ describe("helpers", () => {
     expect(displayPath("/work/project2/a.ts", "/work/proj", "/home/me")).toBe("/work/project2/a.ts");
     expect(displayPath("/home/me/x/y.md", "/work/proj", "/home/me")).toBe("~/x/y.md");
     expect(displayPath("/home/me/x/y.md", null, "/home/me")).toBe("~/x/y.md");
+    // Windows: paths arrive in slash form; the working directory and home are read in either form.
+    expect(displayPath("C:/work/proj/src/a.ts", "c:\\work\\proj", "C:\\Users\\me")).toBe("src/a.ts");
+    expect(displayPath("C:/work/proj", "C:\\work\\proj\\", "C:\\Users\\me")).toBe(".");
+    expect(displayPath("C:/Users/me/x.md", "C:\\work\\proj", "C:\\Users\\me")).toBe("~/x.md");
+    expect(displayPath("D:/x.md", "C:\\work\\proj", "C:\\Users\\me")).toBe("D:/x.md");
   });
 });
 

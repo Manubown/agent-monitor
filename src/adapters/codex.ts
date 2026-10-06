@@ -6,7 +6,8 @@ import type { AgentEvent, ParsedSession, TokenUsage, UsageRecord } from "../core
 
 /**
  * Codex CLI: $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl (and
- * archived_sessions/). Each line is {timestamp, type, payload}.
+ * archived_sessions/). Each line is {timestamp, type, payload}; legacy rollouts
+ * write bare lines instead (see `envelope`).
  *
  * Token usage arrives as cumulative `token_count` events, so each request's
  * usage is the delta between consecutive totals; that also makes repeated
@@ -113,6 +114,36 @@ function usageBetween(from: Totals, to: Totals): TokenUsage {
 
 const payloadId = (p: Record<string, unknown>): string => createHash("sha1").update(JSON.stringify(p)).digest("hex");
 
+/** Response item types; legacy rollouts write them bare, without the envelope. */
+const RESPONSE_ITEMS = new Set([
+  "message",
+  "reasoning",
+  "function_call",
+  "function_call_output",
+  "custom_tool_call",
+  "custom_tool_call_output",
+  "local_shell_call",
+  "web_search_call",
+]);
+
+/**
+ * A rollout line as {timestamp, type, payload}. Legacy rollouts (Codex CLI 2025, before the envelope) start with a
+ * bare session meta line ({id, timestamp, instructions, git}) followed by bare response items and
+ * `{record_type: "state"}` snapshots, none of them with a timestamp; they are read as if wrapped.
+ * Undefined for a line in neither shape.
+ */
+function envelope(line: Record<string, unknown>, first: boolean): { type: unknown; timestamp: unknown; payload: Record<string, unknown> } | undefined {
+  const payload = obj(line.payload);
+  if (payload) return { type: line.type, timestamp: line.timestamp, payload };
+  if (typeof line.type === "string" && RESPONSE_ITEMS.has(line.type)) return { type: "response_item", timestamp: line.timestamp, payload: line };
+  if (first && str(line.id) && line.type === undefined && line.record_type === undefined) {
+    return { type: "session_meta", timestamp: line.timestamp, payload: line };
+  }
+  return undefined;
+}
+
+const ENV_CWD = /<cwd>([^<]+)<\/cwd>/;
+
 export function parseCodex(filePath: string, content: string): ParsedSession | null {
   let nativeId: string | undefined;
   let parentNativeId: string | undefined;
@@ -134,12 +165,21 @@ export function parseCodex(filePath: string, content: string): ParsedSession | n
   const events: AgentEvent[] = [];
   const usage: UsageRecord[] = [];
   const toolNames = new Map<string, string>();
+  /** JSON lines read, and how many of them were in a known shape. */
+  let lines = 0;
+  let known = 0;
 
-  for (const line of jsonLines(content)) {
+  for (const raw of jsonLines(content)) {
+    const line = envelope(raw, lines++ === 0);
+    if (!line) {
+      if (raw.record_type !== undefined) known++;
+      continue;
+    }
+    known++;
+    // Legacy lines carry no timestamp: they keep the meta line's, in file order.
     const ts = toMs(line.timestamp) ?? lastTs;
     if (ts > lastTs) lastTs = ts;
-    const p = obj(line.payload);
-    if (!p) continue;
+    const p = line.payload;
 
     if (line.type === "session_meta") {
       // A fork's rollout replays its parent's lines, the parent's session_meta included.
@@ -168,6 +208,8 @@ export function parseCodex(filePath: string, content: string): ParsedSession | n
             events.push({ ts, kind: "assistant", text, model });
           } else if (p.role === "user") {
             const injected = INJECTED.test(text);
+            // Legacy session meta has no cwd; the injected environment context does.
+            if (injected && !cwd) cwd = ENV_CWD.exec(text)?.[1]?.trim() || undefined;
             // A subagent's dispatch prompt: its first prompt, or the last one when the parent's history was replayed first.
             if (!injected) {
               firstPrompt ??= events.length;
@@ -257,6 +299,8 @@ export function parseCodex(filePath: string, content: string): ParsedSession | n
     }
   }
 
+  // Lines, but none Codex wrote: a format this adapter does not know. Sync reports the error instead of storing nothing.
+  if (lines > 0 && known === 0) throw new Error("Unrecognized Codex rollout format: no line has a known shape");
   if (!nativeId && events.length === 0 && usage.length === 0) return null;
   const firstUser = events.find((e) => e.kind === "user")?.text;
   return {

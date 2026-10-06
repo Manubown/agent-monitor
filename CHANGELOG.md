@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: anything may change between alphas).
 
+## [Unreleased]
+
+### Fixed
+
+- **Windows paths in the analysis views**: file paths written as `C:\…`, `c:\…` or relative `src\a.ts` were treated as relative POSIX paths. The file tree, project map, file heat, resource map, turns and loop reasons now show them relative to the project (or under `~/`), and the different spellings of one file count as one file.
+- **Large edits lost their files**: tool input clipped at 6,000 characters became invalid JSON, so big writes, omp edits and `apply_patch` calls dropped out of file tracking. Long values are now shortened inside the JSON, and patch file headers are kept.
+- **Parent cycles**: a malformed log whose sessions are each other's parent could inflate counts, stall a page or hide the sessions from the list; the cycle is now broken when the sessions are stored, and every subagent tree lists each session once.
+- **Timeline paging**: "Show earlier" could jump back to the newest events instead of reaching the start of a session.
+- **Selections jumping**: a live refresh that added a file or subagent could make the selected file, zoomed flame agent or open file-heat row point at a different item.
+- **Crashes on bad URLs**: `#e-%` in the address, `?view=constructor` on the export, fractional or huge page numbers and timeline positions now fall back instead of failing; download names are slugged. A root-layout failure shows a page with a retry button.
+- **Archive**: an unreadable copy is recorded and skipped until it changes instead of being re-read every 5 s; a damaged copy reads back every part that still decodes; when two archived copies hold one session the fuller one wins; an archived log whose import failed because the database was busy is retried. When a tool shrinks or rewrites a log, the copy it replaces is kept next to it (`.prev`) instead of being overwritten.
+- **Legacy Codex rollouts** (without the `payload` envelope) are read; a log with no recognizable line is reported as failed instead of silently storing nothing.
+
+### Changed
+
+- **Faster always-on syncing**: the archive appends only the new part of a grown log, the archive is listed once per server start, new indexes cover the overview, timeline, heatmap, tools and project filters, and the project file map re-parses only sessions that changed.
+- **Live updates**: only pages affected by a sync refresh (a session page for its own tree, a project map for its project), Back and Forward catch up on changes made meanwhile, "synced N ago" keeps counting on every page, and hidden tabs close their live connection.
+- `pnpm watch` keeps running after a failed sync.
+- **First start**: the top bar appears at once and shows import progress while the first sync runs.
+- **Sync health in the top bar**: a failing sync and an unavailable or lagging search index are shown, with the full message on hover.
+- **Fresh install**: the overview and projects pages list the folders that were scanned and how to point agent-monitor elsewhere.
+- **Session page**: the timeline shows at most 1,000 events at a time, with "Jump to latest"; the page sends less data to the browser.
+- The database schema version is now 5. The cache rebuilds itself once from your logs and archive; tags in `user.db` are kept.
+- CI also runs on Windows, and on Node 22.13.0 (the minimum) and 24.x.
+
 ## [0.1.0-alpha.2] - 2026-10-06
 
 ### Fixed

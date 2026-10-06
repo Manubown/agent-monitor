@@ -113,3 +113,34 @@ describe("codex adapter", () => {
     expect(s.usage[1].usage).toEqual({ input: 1200, cacheRead: 4800, output: 50, reasoning: 20, cacheWrite: 0 });
   });
 });
+
+describe("codex adapter, legacy rollouts", () => {
+  // Codex CLI 2025 rollouts: a bare session meta line, then bare response items and state snapshots, no timestamps.
+  const ID = "0f0e0d0c-0b0a-4908-8706-050403020100";
+  const s = parseCodex(...fixture(`codex-legacy/rollout-2025-06-01T10-00-00-${ID}.jsonl`))!;
+  const start = Date.parse("2025-06-01T10:00:00.000Z");
+
+  it("reads the bare meta line, and the working directory from the environment context", () => {
+    expect(s).toMatchObject({ source: "codex", nativeId: ID, gitBranch: "legacy/main", cwd: "/work/legacy", title: "List the source files" });
+    expect(s.startedAt).toBe(start);
+    expect(s.endedAt).toBe(start);
+  });
+
+  it("maps bare response items in file order, all at the meta timestamp, and skips the half-written last line", () => {
+    expect(kinds(s)).toEqual(["system", "user", "thinking", "tool_call", "tool_result", "tool_call", "tool_result", "assistant"]);
+    expect(s.events.every((e) => e.ts === start)).toBe(true);
+    expect(s.events[3]).toMatchObject({ toolName: "shell", toolCallId: "call_legacy_1", toolInput: '{"command":["ls","src"]}' });
+    expect(s.events[4]).toMatchObject({ toolName: "shell", isError: false, text: "a.ts\nb.ts\n" });
+    expect(s.events[6]).toMatchObject({ toolName: "shell", isError: true });
+    expect(s.usage).toEqual([]);
+  });
+
+  it("reports a file with lines in no known shape instead of storing an empty session", () => {
+    expect(() => parseCodex("/r/rollout-x.jsonl", '{"foo":1}\n{"bar":[2]}\n')).toThrow(/Unrecognized Codex rollout/);
+    // Nothing complete yet (a rollout being created) is no session, not an error.
+    expect(parseCodex("/r/rollout-x.jsonl", "")).toBeNull();
+    expect(parseCodex("/r/rollout-x.jsonl", '{"timestamp":"2026-10-01T12:00:00.000Z","type":"session_me')).toBeNull();
+    // Only state snapshots: a legacy rollout without content.
+    expect(parseCodex("/r/rollout-x.jsonl", '{"record_type":"state"}\n')).toBeNull();
+  });
+});

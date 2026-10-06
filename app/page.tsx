@@ -5,7 +5,8 @@ import { type ActiveSession, activeSessions, byModel, byProject, byTool, daily, 
 import { FilterBar } from "./components/FilterBar";
 import { PixelBand } from "./components/pixel/PixelBand";
 import { type ChartSeries, StackedBarChart } from "./components/StackedBarChart";
-import { Cost, Empty, ExportLinks, Meter, ProjectCell, PulseDot, SourceBadge, sourceColor, TagList, Tile } from "./components/ui";
+import { NoActivity } from "./components/NoActivity";
+import { Cost, ExportLinks, Meter, ProjectCell, PulseDot, SourceBadge, sourceColor, TagList, Tile } from "./components/ui";
 import { ago, dayRange, duration, integer, localDay, per, project, shortDay, tokens, usd } from "./lib/format";
 import { filtersFrom, RANGES, ready, type SearchParams } from "./lib/server";
 import { HEATMAP_WEEKS } from "../src/core/heatmap";
@@ -47,7 +48,13 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
   const range = RANGES.find((r) => r.id === f.range);
   const rangeLabel = !range || range.id === "all" ? "all time" : `last ${range.label}`;
   const peak = Math.max(0, ...timeline.counts);
-  const current = { range: f.range, source: f.source, project: f.cwd, tag: f.tag };
+  // `q` has no box on this page, but a link can carry it (the data below is filtered by it), so every link keeps it.
+  const current = { range: f.range, source: f.source, project: f.cwd, q: f.q, tag: f.tag };
+  const overviewHref = (query: Record<string, string | undefined>) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(query)) if (v) qs.set(k, v);
+    return `/?${qs}`;
+  };
   /** The sessions list under the same filters, optionally sorted by the tile's measure. */
   const drill = (sort?: string) => {
     const qs = new URLSearchParams();
@@ -137,15 +144,20 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
         sources={options.sources.map((s) => ({ value: s, label: sourceLabel(s) }))}
         projects={options.projects.map((p) => ({ value: p, label: project(p) }))}
         current={current}
+        // Only shown when a search is already applied, so it can be seen and cleared.
+        search={Boolean(f.q)}
       />
 
       {o.requests === 0 && o.sessions === 0 ? (
-        <div className="card">
-          <Empty>
-            No agent activity in this range. Logs are read from each tool&apos;s session folder; run{" "}
-            <code>pnpm sources</code> to see where agent-monitor looks.
-          </Empty>
-        </div>
+        <NoActivity
+          db={db}
+          subject="agent activity"
+          range={f.range}
+          filtered={Boolean(f.source || f.cwd || f.tag || f.q)}
+          query={f.q}
+          allTimeHref={overviewHref({ ...current, range: "all" })}
+          clearHref={overviewHref({ range: "all" })}
+        />
       ) : (
         <>
           <div className="tiles">

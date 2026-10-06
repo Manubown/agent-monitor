@@ -1,16 +1,18 @@
 import os from "node:os";
-import path from "node:path";
 import { fileOps } from "../core/activity";
 import type { GourceTouch, TouchKind } from "../core/gource";
+import { dirKey, fileKey } from "../core/paths";
 import { totalTokens } from "../core/types";
 import { clip, displayPath } from "./activity";
 import { type Db, generation } from "./db";
 import { byProject, type Filters, where } from "./queries";
+import { SUBTREE } from "./tree";
 
 /**
  * Cross-session file activity of a project (every session, subagents included, whose working directory is the
  * project): which files were read and changed, by which agents, when. Parsing tool inputs is the expensive part, so
- * the parsed log of a project is kept per database generation and filters are applied on top of it.
+ * the parsed touches of each session are kept until its events change (`events_hash`), a project's log is assembled
+ * from them once per database generation, and filters are applied on top of it.
  */
 
 /** Lower-cased tool names `fileOps` takes paths from; grep/glob searches are not file touches. */
@@ -49,13 +51,84 @@ export interface TouchLog {
   touches: Touch[];
 }
 
-/** Parse the file touches of `ids` (each resolved against its own working directory). */
+/** Parsed file touches of one session, files as `fileKey`s so the pieces of several sessions merge into one log. */
+interface SessionTouches {
+  hash: string;
+  cwd: string | null;
+  touches: { seq: number; ts: number; tool: string; kind: TouchKind; file: string }[];
+}
+
+/** Parse the file touches of one session (resolved against its own working directory). */
+function parseSession(db: Db, id: string, cwd: string | null, hash: string, home: string): SessionTouches {
+  const rows = db
+    .prepare(`SELECT e.seq, e.ts, e.tool_name AS toolName, e.tool_input AS toolInput FROM events e WHERE e.session_id = ? AND ${FILE_CALLS} ORDER BY e.seq`)
+    .all(id) as { seq: number; ts: number; toolName: string | null; toolInput: string | null }[];
+  const cwdKey = cwd && dirKey(cwd);
+  const touches: SessionTouches["touches"] = [];
+  const add = (raw: string, kind: TouchKind, e: { seq: number; ts: number; tool: string }) => {
+    const file = fileKey(raw, home);
+    // The working directory itself is a directory listing, not a file.
+    if (file === cwdKey) return;
+    touches.push({ ...e, kind, file });
+  };
+  for (const e of rows) {
+    const call = { seq: e.seq, ts: e.ts, tool: e.toolName ?? "tool" };
+    for (const op of fileOps(e.toolName, e.toolInput, cwd ?? undefined)) {
+      if (op.op === "search") continue;
+      if (op.op === "move") {
+        add(op.path, "move-from", call);
+        if (op.to) add(op.to, "move-to", call);
+      } else add(op.path, op.op, call);
+    }
+  }
+  return { hash, cwd, touches };
+}
+
+interface Cache {
+  generation: number;
+  /** Parsed touches per `home\0session id`, reused while the session's `events_hash` and working directory hold. */
+  sessions: Map<string, SessionTouches>;
+  /** Assembled project logs of this generation, per `home\0cwd`. */
+  logs: Map<string, TouchLog>;
+  /** Sessions parsed so far (see `touchCacheStats`). */
+  parses: number;
+}
+
+/** Per database (in-memory test databases included); a database that is garbage-collected takes its cache with it. */
+const cache = new WeakMap<Db, Cache>();
+
+/**
+ * The cache of `db`. A sync that changed data (new generation) drops the assembled logs and the touches of sessions
+ * that were removed or whose events changed; every other session keeps its parsed touches.
+ */
+function cacheOf(db: Db): Cache {
+  const gen = generation(db);
+  let entry = cache.get(db);
+  if (!entry) cache.set(db, (entry = { generation: gen, sessions: new Map(), logs: new Map(), parses: 0 }));
+  else if (entry.generation !== gen) {
+    const hashes = new Map(
+      (db.prepare("SELECT id, events_hash AS hash FROM sessions").all() as { id: string; hash: string }[]).map((r) => [r.id, r.hash]),
+    );
+    for (const [key, piece] of entry.sessions) {
+      if (hashes.get(key.slice(key.indexOf("\0") + 1)) !== piece.hash) entry.sessions.delete(key);
+    }
+    entry.generation = gen;
+    entry.logs.clear();
+  }
+  return entry;
+}
+
+/** Test hook: sessions parsed so far and sessions currently cached for `db`. */
+export function touchCacheStats(db: Db): { parses: number; cached: number } {
+  const entry = cache.get(db);
+  return { parses: entry?.parses ?? 0, cached: entry?.sessions.size ?? 0 };
+}
+
+/** The file touches of `ids`, each session parsed once per `events_hash`; files are indexed across the sessions. */
 function loadLog(db: Db, ids: string[], root: (id: string, parentId: string | null) => string, home: string): TouchLog {
+  const entry = cacheOf(db);
   const sessionStmt = db.prepare(
-    "SELECT id, parent_id AS parentId, title, native_id AS nativeId, source, cwd, started_at AS startedAt FROM sessions WHERE id = ?",
-  );
-  const eventStmt = db.prepare(
-    `SELECT e.seq, e.ts, e.tool_name AS toolName, e.tool_input AS toolInput FROM events e WHERE e.session_id = ? AND ${FILE_CALLS} ORDER BY e.seq`,
+    "SELECT id, parent_id AS parentId, title, native_id AS nativeId, source, cwd, started_at AS startedAt, events_hash AS hash FROM sessions WHERE id = ?",
   );
   const sessions: LogSession[] = [];
   const files: string[] = [];
@@ -63,9 +136,16 @@ function loadLog(db: Db, ids: string[], root: (id: string, parentId: string | nu
   const touches: Touch[] = [];
   for (const id of ids) {
     const s = sessionStmt.get(id) as
-      | { id: string; parentId: string | null; title: string | null; nativeId: string; source: string; cwd: string | null; startedAt: number }
+      | { id: string; parentId: string | null; title: string | null; nativeId: string; source: string; cwd: string | null; startedAt: number; hash: string }
       | undefined;
     if (!s) continue;
+    const key = `${home}\0${s.id}`;
+    let piece = entry.sessions.get(key);
+    if (!piece || piece.hash !== s.hash || piece.cwd !== s.cwd) {
+      piece = parseSession(db, s.id, s.cwd, s.hash, home);
+      entry.sessions.set(key, piece);
+      entry.parses++;
+    }
     const session = sessions.length;
     sessions.push({
       id: s.id,
@@ -76,29 +156,14 @@ function loadLog(db: Db, ids: string[], root: (id: string, parentId: string | nu
       cwd: s.cwd,
       startedAt: s.startedAt,
     });
-    const cwd = s.cwd ?? undefined;
-    const add = (raw: string, kind: TouchKind, e: { seq: number; ts: number; tool: string }) => {
-      // One key per file however it was written: `~/x` and `/home/me/x`, composed and decomposed umlauts.
-      const abs = (raw.startsWith("~/") && home ? path.posix.join(home, raw.slice(2)) : raw).normalize("NFC");
-      // The working directory itself is a directory listing, not a file.
-      if (abs === s.cwd) return;
-      let file = fileIndex.get(abs);
+    for (const t of piece.touches) {
+      let file = fileIndex.get(t.file);
       if (file === undefined) {
         file = files.length;
-        fileIndex.set(abs, file);
-        files.push(abs);
+        fileIndex.set(t.file, file);
+        files.push(t.file);
       }
-      touches.push({ session, seq: e.seq, ts: e.ts, tool: e.tool, kind, file });
-    };
-    for (const e of eventStmt.all(id) as { seq: number; ts: number; toolName: string | null; toolInput: string | null }[]) {
-      const call = { seq: e.seq, ts: e.ts, tool: e.toolName ?? "tool" };
-      for (const op of fileOps(e.toolName, e.toolInput, cwd)) {
-        if (op.op === "search") continue;
-        if (op.op === "move") {
-          add(op.path, "move-from", call);
-          if (op.to) add(op.to, "move-to", call);
-        } else add(op.path, op.op, call);
-      }
+      touches.push({ session, seq: t.seq, ts: t.ts, tool: t.tool, kind: t.kind, file });
     }
   }
   return { sessions, files, touches };
@@ -122,14 +187,9 @@ function rootFinder(db: Db): (id: string, parentId: string | null) => string {
   return find;
 }
 
-/** Parsed logs per database (in-memory test databases included), dropped whenever a sync changes the data. */
-const cache = new WeakMap<Db, { generation: number; logs: Map<string, TouchLog> }>();
-
 /** The parsed log of every session whose working directory is `cwd`. Cached until the next sync that changes data. */
 export function projectLog(db: Db, cwd: string, home: string = os.homedir()): TouchLog {
-  const gen = generation(db);
-  let entry = cache.get(db);
-  if (!entry || entry.generation !== gen) cache.set(db, (entry = { generation: gen, logs: new Map() }));
+  const entry = cacheOf(db);
   const key = `${home}\0${cwd}`;
   let log = entry.logs.get(key);
   if (!log) {
@@ -145,8 +205,7 @@ export function sessionLog(db: Db, sessionId: string, home: string = os.homedir(
   const ids = (
     db
       .prepare(
-        `WITH RECURSIVE tree(id, depth) AS (
-           SELECT id, 0 FROM sessions WHERE id = ? UNION ALL SELECT c.id, tree.depth + 1 FROM sessions c JOIN tree ON c.parent_id = tree.id WHERE tree.depth < 64)
+        `${SUBTREE}
          SELECT tree.id FROM tree JOIN sessions s ON s.id = tree.id ORDER BY s.started_at, s.id`,
       )
       .all(sessionId) as { id: string }[]

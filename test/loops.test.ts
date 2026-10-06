@@ -142,6 +142,11 @@ describe("loopReason", () => {
     expect(loopReason(loops(list), "/work/app")).toBe("src/a.ts edited 9 times; `pnpm test` failed 9 times; `pnpm lint` failed 6 times");
   });
 
+  it("shortens edit loops inside a Windows working directory", () => {
+    const loop = { kind: "edit" as const, subject: "C:/work/app/src/a.ts", count: 4, firstSeq: 0, lastSeq: 7, firstTs: 0, lastTs: 7, failures: 0, seqs: [0, 3, 5, 7] };
+    expect(loopReason([loop], "c:\\work\\app")).toBe("src/a.ts edited 4 times");
+  });
+
   it("clips long subjects and counts the rest", () => {
     const long = `node scripts/${"x".repeat(80)}.js`;
     const list = [...times(3, [sh(long), fail]), ...["a", "b", "c"].flatMap((n) => times(3, [sh(`make ${n}`), fail]))];

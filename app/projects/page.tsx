@@ -4,7 +4,8 @@ import { listProjects } from "../../src/store/projects";
 import { filterOptions } from "../../src/store/queries";
 import { FilterBar } from "../components/FilterBar";
 import { projectMapHref } from "../components/projects/links";
-import { Empty, sourceColor } from "../components/ui";
+import { NoActivity } from "../components/NoActivity";
+import { sourceColor } from "../components/ui";
 import { ago, integer, project, tokens, usd } from "../lib/format";
 import { filtersFrom, RANGES, ready, type SearchParams } from "../lib/server";
 import "../projects.css";
@@ -17,6 +18,11 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
   const options = filterOptions(db);
   const current = { range: f.range, source: f.source, project: f.cwd, q: f.q, tag: f.tag };
   const filters = { range: f.range, source: f.source, q: f.q, tag: f.tag };
+  const projectsHref = (query: Record<string, string | undefined>) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(query)) if (v) qs.set(k, v);
+    return `/projects?${qs}`;
+  };
 
   return (
     <>
@@ -36,10 +42,17 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
         projects={options.projects.map((p) => ({ value: p, label: project(p) }))}
         current={current}
       />
-      <section className="card">
-        {rows.length === 0 ? (
-          <Empty>No projects match these filters.</Empty>
-        ) : (
+      {rows.length === 0 ? (
+        <NoActivity
+          db={db}
+          subject="project activity"
+          range={f.range}
+          filtered={Boolean(f.source || f.cwd || f.q || f.tag)}
+          allTimeHref={projectsHref({ ...current, range: "all" })}
+          clearHref={projectsHref({ range: "all" })}
+        />
+      ) : (
+        <section className="card">
           <div className="table-wrap">
             <table>
               <thead>
@@ -100,8 +113,8 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
               </tbody>
             </table>
           </div>
-        )}
-      </section>
+        </section>
+      )}
     </>
   );
 }
