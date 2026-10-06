@@ -1,7 +1,7 @@
 import { parseQuery } from "../../../../src/search/query";
 import { context } from "../../../../src/search/service";
 import { sourceColor } from "../../../components/ui";
-import { getDb, ready } from "../../../lib/server";
+import { getDb, getIndex, ready } from "../../../lib/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +12,9 @@ export async function GET(request: Request): Promise<Response> {
   const session = params.get("session");
   const seq = Number(params.get("seq") || Number.NaN);
   if (!session || !Number.isInteger(seq)) return Response.json({ error: "session and seq are required" }, { status: 400 });
+  // Previews only ever follow a hit: without the index there is nothing to preview, so report the same reason as /api/search.
+  const index = getIndex();
+  if (!index.ok) return Response.json({ error: index.error }, { status: 503 });
   await ready();
   const terms = parseQuery(params.get("q") ?? "").must.map((c) => c.text);
   const result = context(getDb(), session, seq, 4, terms);

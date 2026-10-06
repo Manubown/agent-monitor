@@ -29,6 +29,12 @@ describe("priceFor", () => {
   it("returns undefined for unknown models", () => {
     expect(priceFor("gpt-5-codex", DEFAULT_PRICES)).toBeUndefined();
   });
+
+  it("prices a variant of a known model but never an unknown version of it", () => {
+    expect(priceFor("claude-opus-5-5-fast", DEFAULT_PRICES)).toBe(DEFAULT_PRICES["claude-opus-5-5"]);
+    expect(priceFor("claude-opus-5-6", DEFAULT_PRICES)).toBeUndefined();
+    expect(priceFor("claude-sonnet-5-7-fast", DEFAULT_PRICES)).toBeUndefined();
+  });
 });
 
 describe("costOf", () => {

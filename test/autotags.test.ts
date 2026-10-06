@@ -90,6 +90,12 @@ describe("shell activity tags", () => {
     expect(tagsOf([sh("pnpm run build:native")])).toEqual(["build"]);
     for (const cmd of ["tsc --noEmit", "pnpm exec tsc --noEmit", "pnpm build-storybook", "make test"]) expect(tagsOf([sh(cmd)]), cmd).not.toContain("build");
   });
+
+  it("a package manager named again as its own script resolves instead of recursing", () => {
+    expect(tagsOf([sh("pnpm pnpm i")])).toEqual([]);
+    expect(tagsOf([sh("pnpm pnpm vitest")])).toEqual(["tests"]);
+    expect(tagsOf([sh("npm npm run build")])).toEqual(["build"]);
+  });
 });
 
 describe("other tags", () => {

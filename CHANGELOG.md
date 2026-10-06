@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: anything may change between alphas).
 
+## [Unreleased]
+
+### Fixed
+
+- **Windows addon without the Visual C++ runtime**: the search addon now links the C runtime statically, so it loads on PCs without the Visual C++ Redistributable.
+- **Missing search addon**: when the addon is missing or fails to load, the dashboard keeps working and only search reports why it is unavailable (HTTP 503, and the message in the search palette). A page that fails to render now shows an error page with a retry button.
+- **Auto-tag crash**: a command such as `pnpm pnpm i` made tag detection recurse until the stack overflowed, so that session was never stored.
+- **Huge logs**: a log too large to read into memory (over about 512 MiB) stopped every sync. It is now reported as failed and skipped until it changes.
+- **Unknown model versions**: a newer version of a known model (e.g. `claude-opus-5-6`) was priced like an older one; it now stays unpriced until you add its price. Variants such as `claude-opus-5-5-fast` are still priced.
+- **"0 failed"**: a passing test summary in the output of a failed command was counted as a test failure.
+- **Archive**: a failed archive copy is retried (at most once a minute) instead of waiting for the log to change, shows in the top bar's failed count, and no longer leaves a temporary file behind.
+- **Moved logs**: when a tool moves a log (Codex archiving a session to `archived_sessions/`), rebuilding the database or `sync --full` no longer replaces the live session with the archived copy from the old path.
+
+### Changed
+
+- `pnpm dev`, `build`, `start` and `demo` run Next.js with its telemetry switched off (`scripts/next.mjs`).
+
 ## [0.1.0-alpha.1] - 2026-10-06
 
 First public alpha. Everything below is new relative to the private prototype.

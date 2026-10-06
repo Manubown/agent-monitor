@@ -146,7 +146,7 @@ Use ccusage for quick cost numbers in the terminal. Use Langfuse/LangSmith to tr
 
 ## Privacy
 
-- **Nothing leaves your machine.** No telemetry, no accounts, no network calls besides the optional addon download at build time.
+- **Nothing leaves your machine.** No telemetry, no accounts, no network calls besides the optional addon download at build time. The `pnpm dev`, `build`, `start` and `demo` scripts also switch off Next.js's own telemetry (`scripts/next.mjs`); running `next` directly does not.
 - The server binds to `127.0.0.1` and refuses requests whose `Host` header isn't a loopback name, which blocks DNS-rebinding attacks.
 - **The database, search index and archive contain your transcripts**: prompts, tool output, and file contents the agents read, which can include secrets. They also keep them after the tools delete their own logs. Treat `~/.local/share/agent-monitor` like the logs themselves.
 

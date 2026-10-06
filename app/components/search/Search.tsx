@@ -215,13 +215,21 @@ function Palette({ open, onClose, mac }: { open: boolean; onClose: () => void; m
       setLoading(true);
       try {
         const res = await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}&sort=${sortPref}`, { signal: ctrl.signal });
-        const body = (await res.json()) as ApiSearch & { error?: string };
-        if (!res.ok) throw new Error(body.error ?? res.statusText);
+        if (!res.ok) {
+          // Error responses carry `{ error }` (503 when the search addon is missing); fall back to the status line.
+          const failed = (await res.json().catch(() => null)) as { error?: string } | null;
+          throw new Error(failed?.error || `${res.status} ${res.statusText}`);
+        }
+        const body = (await res.json()) as ApiSearch;
         setData(body);
         setError(null);
         setSel(body.groups[0]?.hits.length ? 1 : 0);
       } catch (e) {
-        if (!ctrl.signal.aborted) setError(e instanceof Error ? e.message : String(e));
+        if (!ctrl.signal.aborted) {
+          setError(e instanceof Error ? e.message : String(e));
+          setData(null);
+          setSel(0);
+        }
       } finally {
         if (!ctrl.signal.aborted) setLoading(false);
       }
@@ -548,8 +556,14 @@ function Palette({ open, onClose, mac }: { open: boolean; onClose: () => void; m
                 </div>
                 <CheatSheet onInsert={insertAtEnd} />
               </div>
+            ) : error ? (
+              <div className="sp-pad">
+                <p className="error-text" role="alert">
+                  {error}
+                </p>
+              </div>
             ) : !data ? (
-              <p className="muted sp-pad">{error ? "" : "Searching…"}</p>
+              <p className="muted sp-pad">Searching…</p>
             ) : data.groups.length === 0 ? (
               <div className="sp-pad">
                 <p>No matches.</p>
@@ -631,9 +645,7 @@ function Palette({ open, onClose, mac }: { open: boolean; onClose: () => void; m
             <kbd>↓</kbd> navigate <kbd>↵</kbd> open <kbd>{mac ? "⌘↵" : "Ctrl ↵"}</kbd> new tab <kbd>Tab</kbd> complete
           </span>
           <span className="sp-stats">
-            {error ? (
-              <span className="error-text">{error}</span>
-            ) : tokenError ? (
+            {tokenError ? (
               <span className="error-text">{tokenError}</span>
             ) : data && !empty ? (
               `${data.totalHits}${data.limited ? "+" : ""} hits · ${data.groups.length} sessions · ${data.tookMs} ms`

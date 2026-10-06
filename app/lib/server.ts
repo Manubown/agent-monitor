@@ -18,6 +18,8 @@ export interface SyncEvent {
 interface State {
   db?: Db;
   index?: SearchIndex;
+  /** Why the search addon could not be loaded; set and logged once, then the index stays unavailable for this process. */
+  indexError?: string;
   running?: Promise<SyncResult>;
   last?: SyncResult & { at: number };
   timer?: NodeJS.Timeout;
@@ -34,14 +36,38 @@ export function getDb(): Db {
   return state.db;
 }
 
-/** Full-text index; sync keeps it at the database's generation. */
-export function getIndex(): SearchIndex {
-  state.index ??= openSearchIndex(siblingPath(defaultDbPath(), "search-index"));
-  return state.index;
+/** The search index, or the reason it is unavailable; everything except search works without it. */
+export type IndexState = { ok: true; index: SearchIndex } | { ok: false; error: string };
+
+/**
+ * Full-text index; sync keeps it at the database's generation. The native addon
+ * may be missing (never built) or fail to load (other platform, missing system
+ * library): that is reported once and then remembered, so the dashboard keeps
+ * working and only search answers 503.
+ */
+export function getIndex(): IndexState {
+  if (state.index) return { ok: true, index: state.index };
+  if (state.indexError) return { ok: false, error: state.indexError };
+  try {
+    state.index = openSearchIndex(siblingPath(defaultDbPath(), "search-index"));
+    return { ok: true, index: state.index };
+  } catch (error) {
+    const reason = (error instanceof Error ? error.message : String(error)).replace(/\.$/, "");
+    // The "not built" message already names the fix; a load failure (other platform, missing library) needs it too.
+    const fix = reason.includes("pnpm build:native") ? "" : " Run `pnpm build:native`.";
+    state.indexError = `Search is unavailable: ${reason}.${fix} Restart the server afterwards.`;
+    console.error(`[agent-monitor] ${state.indexError}`);
+    return { ok: false, error: state.indexError };
+  }
 }
 
+/** Never throws synchronously: `startBackgroundSync` and `ready()` must always get a promise to attach to. */
 export function runSync(full = false): Promise<SyncResult> {
-  state.running ??= syncAll(getDb(), { full, index: getIndex() })
+  state.running ??= Promise.resolve()
+    .then(() => {
+      const index = getIndex();
+      return syncAll(getDb(), { full, index: index.ok ? index.index : undefined });
+    })
     .then((result) => {
       const at = Date.now();
       state.last = { ...result, at };

@@ -21,8 +21,10 @@ export async function GET(request: Request): Promise<Response> {
   const q = params.get("q") ?? "";
   const sortParam = params.get("sort");
   const sort = sortParam === "newest" || sortParam === "new" ? "newest" : "relevance";
+  const index = getIndex();
+  if (!index.ok) return Response.json({ error: index.error }, { status: 503 });
   try {
-    const result = search(db, getIndex(), q, { sort });
+    const result = search(db, index.index, q, { sort });
     return Response.json({
       ...result,
       groups: result.groups.map((g) => ({ ...g, session: { ...g.session, color: sourceColor(g.session.source) } })),

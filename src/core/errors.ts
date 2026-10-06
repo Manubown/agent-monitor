@@ -81,8 +81,8 @@ const RULES: Rule[] = [
     patterns: [
       /^\s*(?:FAIL|FAILED)\b/m, // vitest/jest "FAIL  test/x.test.ts", pytest "FAILED tests/x.py::t"
       /\btest result: FAILED\b/, // cargo test
-      /\btests?(?: files)?\s+\d+ failed\b/i, // vitest summary "Tests  2 failed"
-      /\b\d+ (?:tests? )?failed\b/i, // pytest "1 failed, 3 passed"
+      /\btests?(?: files)?\s+[1-9]\d* failed\b/i, // vitest summary "Tests  2 failed"
+      /\b[1-9]\d* (?:tests? )?failed\b/i, // pytest "1 failed, 3 passed"; "0 failed" is a pass
       /\btests? (?:has |have )?failed\b/i,
       /\bassertion(?:error| failed)\b/i,
       /\bfailing tests?\b/i,

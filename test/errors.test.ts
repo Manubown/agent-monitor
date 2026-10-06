@@ -19,7 +19,16 @@ const CASES: Record<ErrorCategory, string[]> = {
   network: ["connect ECONNREFUSED 127.0.0.1:5432", "TypeError: fetch failed", "API Error: 502 Bad Gateway", "getaddrinfo ENOTFOUND api.example.com"],
   permission: ["EACCES: permission denied, open '/etc/shadow'", "sudo: a password is required", "Request failed with status code 403", "401 Unauthorized"],
   not_found: ["ENOENT: no such file or directory, open 'a.txt'", "bash: foo: command not found", "HTTP/1.1 404 Not Found", "Path '/tmp/x.webp' not found"],
-  other: ["Command exited with code 1", "TypeError: x.filter is not a function", "lines 404 to 410 of a.ts changed", "Error at line 503", ""],
+  other: [
+    "Command exited with code 1",
+    "TypeError: x.filter is not a function",
+    "lines 404 to 410 of a.ts changed",
+    "Error at line 503",
+    "",
+    // A passing test summary in the output of a command that failed for another reason.
+    "==== 0 failed, 12 passed in 0.50s ====\nCommand exited with code 1",
+    "Tests  0 failed | 12 passed\nCommand exited with code 2",
+  ],
 };
 
 describe("classifyError", () => {

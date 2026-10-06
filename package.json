@@ -35,10 +35,10 @@
   },
   "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "dev": "next dev --hostname 127.0.0.1 --port 4100",
+    "dev": "node scripts/next.mjs dev --hostname 127.0.0.1 --port 4100",
     "build:native": "node scripts/build-native.mjs",
-    "build": "pnpm build:native && next build",
-    "start": "next start --hostname 127.0.0.1 --port 4100",
+    "build": "pnpm build:native && node scripts/next.mjs build",
+    "start": "node scripts/next.mjs start --hostname 127.0.0.1 --port 4100",
     "sync": "tsx src/cli.ts sync",
     "watch": "tsx src/cli.ts watch",
     "stats": "tsx src/cli.ts stats",

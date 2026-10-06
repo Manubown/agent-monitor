@@ -140,8 +140,9 @@ function testRun(w: string[]): string | undefined {
   const s = script(h, p);
   if (s !== undefined) {
     if (s === "test" || s.startsWith("test:")) return `${h} ${s}`;
-    // `pnpm vitest`: without `run`, package managers also start installed binaries.
-    return p[0] === "run" ? undefined : testRun(w.slice(w.indexOf(s)));
+    // `pnpm vitest`: without `run`, package managers also start installed binaries. The positional comes after the
+    // program name, so searching from 1 always shortens `w` (`pnpm pnpm i` must not recurse on itself).
+    return p[0] === "run" ? undefined : testRun(w.slice(w.indexOf(s, 1)));
   }
   if (h === "cargo" && (p[0] === "test" || p[0] === "nextest")) return `cargo ${p[0]}`;
   if (["go", "deno", "dotnet", "mix", "swift", "zig"].includes(h) && p[0] === "test") return `${h} test`;
@@ -157,7 +158,7 @@ function buildRun(w: string[]): string | undefined {
   const s = script(h, p);
   if (s !== undefined) {
     if (s === "build" || s.startsWith("build:")) return `${h} ${s}`;
-    return p[0] === "run" ? undefined : buildRun(w.slice(w.indexOf(s)));
+    return p[0] === "run" ? undefined : buildRun(w.slice(w.indexOf(s, 1)));
   }
   if (h === "tsc") return w.some((x) => x.toLowerCase() === "--noemit") ? undefined : "tsc";
   if (["cargo", "go", "dotnet", "swift", "zig", "next", "vite", "astro", "napi"].includes(h) && p[0] === "build") return `${h} build`;

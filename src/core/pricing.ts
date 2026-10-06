@@ -68,10 +68,11 @@ export function loadPrices(env: Env = process.env): Record<string, ModelPrice> {
 export function priceFor(model: string, prices: Record<string, ModelPrice>): ModelPrice | undefined {
   const id = normalizeModel(model);
   if (prices[id]) return prices[id];
-  // Longest known id that prefixes this one, e.g. "claude-opus-5-5-fast" -> "claude-opus-5-5".
+  // Longest known id that prefixes this one with a variant suffix, e.g. "claude-opus-5-5-fast" -> "claude-opus-5-5".
+  // A suffix starting with a digit is another version ("claude-opus-5-6" is not "claude-opus-5"): left unpriced.
   let best: string | undefined;
   for (const key of Object.keys(prices)) {
-    if (id.startsWith(`${key}-`) && (!best || key.length > best.length)) best = key;
+    if (id.startsWith(`${key}-`) && !/^\d/.test(id.slice(key.length + 1)) && (!best || key.length > best.length)) best = key;
   }
   return best ? prices[best] : undefined;
 }

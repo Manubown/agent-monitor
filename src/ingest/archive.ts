@@ -26,12 +26,18 @@ export async function writeArchive(archiveDir: string, adapterId: string, filePa
   const target = archivePath(archiveDir, adapterId, filePath);
   await fs.mkdir(path.dirname(target), { recursive: true });
   const tmp = `${target}.${process.pid}.tmp`;
-  await fs.writeFile(tmp, await gzip(content));
-  await fs.rename(tmp, target);
+  try {
+    await fs.writeFile(tmp, await gzip(content));
+    await fs.rename(tmp, target);
+  } catch (error) {
+    await fs.rm(tmp, { force: true });
+    throw error;
+  }
 }
 
-export async function readArchive(file: string): Promise<string> {
-  return (await gunzip(await fs.readFile(file))).toString("utf8");
+/** The archived log's raw bytes, decoded like a live log by the caller. */
+export async function readArchive(file: string): Promise<Buffer> {
+  return gunzip(await fs.readFile(file));
 }
 
 export interface ArchivedLog {

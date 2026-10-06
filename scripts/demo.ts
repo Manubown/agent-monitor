@@ -18,7 +18,6 @@
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import path from "node:path";
 import { DEFAULT_PRICES, normalizeModel } from "../src/core/pricing";
 
@@ -2125,7 +2124,8 @@ function main(): void {
       g = generate(l, Date.now());
       console.log(`generated demo data in ${out}`);
     }
-    const next = createRequire(import.meta.url).resolve("next/dist/bin/next");
+    // Through scripts/next.mjs, like the package.json scripts: Next.js telemetry stays off.
+    const next = path.join(import.meta.dirname, "next.mjs");
     const child = spawn(process.execPath, [next, "dev", "--hostname", "127.0.0.1", "--port", "4200"], { stdio: "inherit", env: { ...process.env, ...env } });
     const timer = live && g ? runLive(g) : undefined;
     for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => child.kill(signal));

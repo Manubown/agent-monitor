@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { gunzipSync } from "node:zlib";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, Env } from "../src/core/adapter";
+import { archivePath } from "../src/ingest/archive";
 import { syncAll } from "../src/ingest/sync";
 import { DEFAULT_PRICES } from "../src/core/pricing";
 import type { IndexDoc, SearchIndex } from "../src/search/native";
@@ -247,5 +249,51 @@ describe("archive and incremental sync", () => {
     expect(parses).toEqual({ a: 1, b: 0 });
     expect(r.errors).toEqual([]);
     expect(getSession(ctx.db, "fake:a")).not.toBeNull();
+  });
+
+  it("retries a failed archive copy a minute later without re-parsing the log, and leaves no temp file", async () => {
+    const archiveDir = fs.mkdtempSync(path.join(os.tmpdir(), "am-archive-"));
+    const log = path.join(ctx.root, CODEX_LOG);
+    const target = archivePath(archiveDir, "codex", log);
+    // A directory where the copy belongs makes its final rename fail.
+    fs.mkdirSync(target, { recursive: true });
+    const sync = () => syncAll(ctx.db, { env: ctx.env, prices: DEFAULT_PRICES, archiveDir });
+
+    const first = await sync();
+    expect(first.errors.map((e) => [e.path, e.error.startsWith("archive: ")])).toEqual([[log, true]]);
+    expect(getSession(ctx.db, "codex:ccc333")).not.toBeNull();
+    expect(fs.readdirSync(path.dirname(target)).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+    // Pending, and not retried before a minute has passed.
+    expect((await sync()).errors).toEqual([]);
+    expect(syncStatus(ctx.db).errors.map((e) => e.path)).toEqual([log]);
+
+    fs.rmdirSync(target);
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+    const retried = await sync();
+    now.mockRestore();
+    expect(retried).toMatchObject({ parsed: 0, errors: [] });
+    expect(syncStatus(ctx.db).errors).toEqual([]);
+    expect(gunzipSync(fs.readFileSync(target)).equals(fs.readFileSync(log))).toBe(true);
+  });
+
+  it("keeps a moved log's live copy over its archived old path when the database is rebuilt", async () => {
+    const userTexts = (db: Db) => sessionEvents(db, "codex:ccc333").filter((e) => e.kind === "user").map((e) => e.text);
+    await syncAll(ctx.db, { env: ctx.env, prices: DEFAULT_PRICES });
+    // Codex archiving a session: the same rollout moves to archived_sessions/ and keeps growing there.
+    const moved = path.join(ctx.root, "codex", "archived_sessions", path.basename(CODEX_LOG));
+    fs.mkdirSync(path.dirname(moved));
+    fs.renameSync(path.join(ctx.root, CODEX_LOG), moved);
+    fs.appendFileSync(moved, codexLine("after the move"));
+    await syncAll(ctx.db, { env: ctx.env, prices: DEFAULT_PRICES });
+    expect(userTexts(ctx.db)).toContain("after the move");
+
+    const fresh = openDb(":memory:");
+    await syncAll(fresh, { env: ctx.env, prices: DEFAULT_PRICES });
+    expect(getSession(fresh, "codex:ccc333")?.session.filePath).toBe(moved);
+    expect(userTexts(fresh)).toEqual(userTexts(ctx.db));
+
+    await syncAll(ctx.db, { env: ctx.env, prices: DEFAULT_PRICES, full: true });
+    expect(getSession(ctx.db, "codex:ccc333")?.session.filePath).toBe(moved);
+    expect(userTexts(ctx.db)).toContain("after the move");
   });
 });

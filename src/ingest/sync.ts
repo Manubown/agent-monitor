@@ -17,6 +17,11 @@ const MAX_TOOL_TEXT = 6_000;
 /** Documents per index commit when rebuilding the search index from the database. */
 const REBUILD_BATCH = 5_000;
 
+/** files.error prefix for a log that was stored but whose archive copy failed: only the copy is retried. */
+const ARCHIVE_ERROR = "archive: ";
+/** A pending archive copy is retried at most this often, since each retry re-reads the whole log. */
+const ARCHIVE_RETRY_MS = 60_000;
+
 export interface SyncOptions {
   env?: Env;
   adapters?: Adapter[];
@@ -69,6 +74,18 @@ const clip = (text: string | undefined, max: number): string | null => {
   if (text === undefined) return null;
   return text.length > max ? `${text.slice(0, max)}\n… [truncated ${text.length - max} chars]` : text;
 };
+
+const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/** A log's text. One too big for a JavaScript string (~512 MiB) fails like an unparseable log: skipped until it changes. */
+function decode(raw: Buffer): string {
+  try {
+    return raw.toString("utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ERR_STRING_TOO_LONG") throw error;
+    throw new Error(`log too large to parse (${Math.round(raw.length / 2 ** 20)} MiB)`);
+  }
+}
 
 const sessionCostSource = (sources: CostSource[]): string => {
   if (sources.length === 0) return "none";
@@ -350,49 +367,80 @@ export async function syncAll(db: Db, options: SyncOptions = {}): Promise<SyncRe
   const adapters = options.adapters ?? defaultAdapters;
   const result: SyncResult = { scanned: 0, parsed: 0, sessions: 0, errors: [], generation: 0, durationMs: 0 };
   const known = new Map(
-    (db.prepare("SELECT path, size, mtime_ms FROM files").all() as { path: string; size: number; mtime_ms: number }[]).map(
+    (db.prepare("SELECT path, size, mtime_ms, synced_at, error FROM files").all() as { path: string; size: number; mtime_ms: number; synced_at: number; error: string | null }[]).map(
       (r) => [r.path, r],
     ),
   );
   const seen = new Set<string>();
+  /** Logs found in the adapters' roots during this sync, as opposed to copies read back from the archive. */
+  const live = new Set<string>();
   const changes: SessionChange[] = [];
   const upsertFile = db.prepare(
     `INSERT INTO files (path, adapter, size, mtime_ms, synced_at, missing, error) VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(path) DO UPDATE SET adapter = excluded.adapter, size = excluded.size, mtime_ms = excluded.mtime_ms,
        synced_at = excluded.synced_at, missing = excluded.missing, error = excluded.error`,
   );
+  const sessionFile = db.prepare("SELECT file_path AS path FROM sessions WHERE id = ?");
 
-  const ingest = (adapter: Adapter, filePath: string, content: string, stat: { size: number; mtimeMs: number }, missing: boolean) => {
-    let parsed = false;
+  /** Report a failed file and remember it: its real size skips it until it changes, size -1 retries it next sync. */
+  const recordFailure = (adapterId: string, filePath: string, size: number, mtimeMs: number, missing: boolean, message: string) => {
+    result.errors.push({ path: filePath, error: message });
     try {
-      const session = adapter.parse(filePath, content);
-      parsed = true;
-      const change = transaction(db, () => {
-        const c = writeSession(db, filePath, session, prices);
-        upsertFile.run(filePath, adapter.id, stat.size, stat.mtimeMs, Date.now(), missing ? 1 : 0, null);
-        return c;
-      });
-      changes.push(change);
-      result.parsed++;
-      if (session) result.sessions++;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      result.errors.push({ path: filePath, error: message });
-      // A parse error repeats until the file changes, so remember its size and skip it until then. A failed write
-      // (e.g. "database is locked" while another process syncs) is transient: size -1 makes the next sync retry it.
-      try {
-        upsertFile.run(filePath, adapter.id, parsed ? -1 : stat.size, stat.mtimeMs, Date.now(), missing ? 1 : 0, message);
-      } catch {
-        // The database is still unavailable; the file is unknown to it and gets picked up next time anyway.
-      }
+      upsertFile.run(filePath, adapterId, size, mtimeMs, Date.now(), missing ? 1 : 0, message);
+    } catch {
+      // The database is still unavailable; the file is unknown to it and gets picked up next time anyway.
     }
   };
+
+  /** Parse and store one log. `archiveError` stays on the file's row when the log itself was stored. */
+  const ingest = (adapter: Adapter, filePath: string, raw: Buffer, stat: { size: number; mtimeMs: number }, missing: boolean, archiveError: string | null = null) => {
+    let parsed = false;
+    try {
+      const session = adapter.parse(filePath, decode(raw));
+      parsed = true;
+      // A tool that moved its log (Codex: sessions/ to archived_sessions/) left the old path in the archive. After a
+      // rebuild or with --full, that stale copy would replace the session the live file holds: the live file wins.
+      const holder = missing && session ? (sessionFile.get(`${session.source}:${session.nativeId}`) as { path: string } | undefined)?.path : undefined;
+      const superseded = holder !== undefined && holder !== filePath && live.has(holder);
+      const change = transaction(db, () => {
+        const c = superseded ? undefined : writeSession(db, filePath, session, prices);
+        upsertFile.run(filePath, adapter.id, stat.size, stat.mtimeMs, Date.now(), missing ? 1 : 0, archiveError);
+        return c;
+      });
+      result.parsed++;
+      if (change) {
+        changes.push(change);
+        if (session) result.sessions++;
+      }
+    } catch (error) {
+      // A parse error repeats until the file changes, so remember its size and skip it until then. A failed write
+      // (e.g. "database is locked" while another process syncs) is transient: size -1 makes the next sync retry it.
+      recordFailure(adapter.id, filePath, parsed ? -1 : stat.size, stat.mtimeMs, missing, errorMessage(error));
+    }
+  };
+
+  /** Copy a log into the archive; returns the error to keep on the file's row, or null. */
+  const archive = async (adapterId: string, filePath: string, raw: Buffer): Promise<string | null> => {
+    try {
+      await writeArchive(archiveDir, adapterId, filePath, raw);
+      return null;
+    } catch (error) {
+      const message = `${ARCHIVE_ERROR}${errorMessage(error)}`;
+      result.errors.push({ path: filePath, error: message });
+      return message;
+    }
+  };
+  const setArchiveError = db.prepare("UPDATE files SET error = ?, synced_at = ? WHERE path = ?");
+  // The first failed retry of a pending archive copy ends the retries for this sync: the cause (a full disk, a
+  // read-only archive) is usually shared. Its new attempt time lets the next sync try the next pending copy first.
+  let retryArchive = true;
 
   for (const adapter of adapters) {
     for (const root of rootsFor(adapter, env)) {
       for await (const filePath of walk(root)) {
         if (!adapter.match(filePath) || seen.has(filePath)) continue;
         seen.add(filePath);
+        live.add(filePath);
         result.scanned++;
         let stat;
         try {
@@ -401,20 +449,25 @@ export async function syncAll(db: Db, options: SyncOptions = {}): Promise<SyncRe
           continue; // Deleted between readdir and stat.
         }
         const previous = known.get(filePath);
-        if (!options.full && previous && previous.size === stat.size && previous.mtime_ms === stat.mtimeMs) continue;
+        const unchanged = !options.full && previous !== undefined && previous.size === stat.size && previous.mtime_ms === stat.mtimeMs;
+        // Stored and unchanged: nothing to do, unless its archive copy failed; then only the copy is retried.
+        const archivePending = retryArchive && previous?.error?.startsWith(ARCHIVE_ERROR) === true && Date.now() - previous.synced_at >= ARCHIVE_RETRY_MS;
+        if (unchanged && !archivePending) continue;
         let raw: Buffer;
         try {
           raw = await fs.readFile(filePath);
-        } catch {
-          continue; // Deleted between stat and read.
-        }
-        try {
-          await writeArchive(archiveDir, adapter.id, filePath, raw);
         } catch (error) {
-          // Ingest anyway; the archive catches up on the file's next change.
-          result.errors.push({ path: filePath, error: `archive: ${error instanceof Error ? error.message : String(error)}` });
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === "ENOENT") continue; // Deleted between stat and read.
+          // Over 2 GiB stays unreadable until the file changes; anything else (e.g. a lock) is retried next sync.
+          recordFailure(adapter.id, filePath, code === "ERR_FS_FILE_TOO_LARGE" ? stat.size : -1, stat.mtimeMs, false, errorMessage(error));
+          continue;
         }
-        ingest(adapter, filePath, raw.toString("utf8"), stat, false);
+        const archiveError = await archive(adapter.id, filePath, raw);
+        if (unchanged) {
+          setArchiveError.run(archiveError, Date.now(), filePath);
+          retryArchive = archiveError === null;
+        } else ingest(adapter, filePath, raw, stat, false, archiveError);
       }
     }
   }
@@ -426,13 +479,16 @@ export async function syncAll(db: Db, options: SyncOptions = {}): Promise<SyncRe
     if (!adapter || seen.has(entry.original) || !adapter.match(entry.original)) continue;
     if (!options.full && known.has(entry.original)) continue; // Already ingested; flagged missing below.
     seen.add(entry.original);
+    let raw: Buffer;
+    let mtimeMs: number;
     try {
-      const stat = await fs.stat(entry.file);
-      const content = await readArchive(entry.file);
-      ingest(adapter, entry.original, content, { size: Buffer.byteLength(content), mtimeMs: stat.mtimeMs }, true);
+      mtimeMs = (await fs.stat(entry.file)).mtimeMs;
+      raw = await readArchive(entry.file);
     } catch (error) {
-      result.errors.push({ path: entry.file, error: error instanceof Error ? error.message : String(error) });
+      result.errors.push({ path: entry.file, error: errorMessage(error) });
+      continue;
     }
+    ingest(adapter, entry.original, raw, { size: raw.length, mtimeMs }, true);
   }
   const markMissing = db.prepare("UPDATE files SET missing = 1 WHERE path = ?");
   for (const filePath of known.keys()) if (!seen.has(filePath)) markMissing.run(filePath);
@@ -456,7 +512,7 @@ export async function syncAll(db: Db, options: SyncOptions = {}): Promise<SyncRe
     } catch (error) {
       // Typically LOCKED: another process is writing the index. Moving the database past any generation that
       // process may commit forces a full rebuild on the next sync instead of silently missing these changes.
-      result.indexError = error instanceof Error ? error.message : String(error);
+      result.indexError = errorMessage(error);
       result.generation = bumpGeneration(db);
     }
   }

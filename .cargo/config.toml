@@ -1,0 +1,5 @@
+# Picked up by every cargo run from the repo root (scripts/build-native.mjs, release.yml).
+# Link the C runtime statically on Windows: the addon then loads on PCs without the
+# Visual C++ Redistributable (VCRUNTIME140.dll).
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
