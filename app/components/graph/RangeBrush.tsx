@@ -2,7 +2,7 @@
 
 import { type KeyboardEvent, type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { clock } from "../../lib/format";
-import { invertTime } from "./resourceMap";
+import { invertTime } from "./mapFilters";
 import { timeScale, timeTicks } from "./timeScale";
 
 interface Props {

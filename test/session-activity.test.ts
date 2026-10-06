@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { invertTime, mapQuery, parseMapFilters, passes } from "../app/components/graph/resourceMap";
+import { invertTime, mapQuery, parseMapFilters, passes } from "../app/components/graph/mapFilters";
 import { activeSpans, timeScale, timeTicks } from "../app/components/graph/timeScale";
 import { commandHeads, urlResource } from "../src/core/resources";
 import { type Db, openDb } from "../src/store/db";

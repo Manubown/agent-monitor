@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { sessionActivity } from "../../../../src/store/activity";
 import { getSession } from "../../../../src/store/queries";
 import { ResourceMap } from "../../../components/graph/ResourceMap";
-import { parseMapFilters } from "../../../components/graph/resourceMap";
+import { parseMapFilters } from "../../../components/graph/mapFilters";
 import { integer } from "../../../lib/format";
 import { ready, type SearchParams } from "../../../lib/server";
 

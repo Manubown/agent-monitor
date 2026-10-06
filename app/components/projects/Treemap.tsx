@@ -3,7 +3,7 @@ import { sourceLabel } from "../../../src/adapters";
 import { dominantSource, touches, type TreeCounts, type TreeDir, type TreeNode } from "../../../src/core/filetree";
 import { integer } from "../../lib/format";
 import { sourceColor } from "../ui";
-import { nestedLayout } from "./treemap";
+import { nestedLayout } from "./squarify";
 import "../../projects.css";
 
 export type ColorMode = "ratio" | "source";

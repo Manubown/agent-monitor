@@ -6,7 +6,7 @@ import type { ActionCategory, SessionActivity } from "../../../src/store/activit
 import { clock, integer } from "../../lib/format";
 import { agentColor, CATEGORY_COLOR, eventHref } from "./categories";
 import { RangeBrush } from "./RangeBrush";
-import { KIND_OF_RESOURCE, MAP_KIND_LABEL, MAP_KINDS, type MapFilters, type MapKind, mapQuery, passes } from "./resourceMap";
+import { KIND_OF_RESOURCE, MAP_KIND_LABEL, MAP_KINDS, type MapFilters, type MapKind, mapQuery, passes } from "./mapFilters";
 import "../../graph.css";
 import "../../resource-map.css";
 

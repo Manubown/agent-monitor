@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { nestedLayout, type Rect, squarify } from "../app/components/projects/treemap";
+import { nestedLayout, type Rect, squarify } from "../app/components/projects/squarify";
 import { ancestors, buildTree, dominantSource, findDir, splitPath, type TreeNode, touches } from "../src/core/filetree";
 import { dim, GOURCE_COLOURS, type GourceTouch, gourceLog } from "../src/core/gource";
 import { type Db, openDb } from "../src/store/db";
