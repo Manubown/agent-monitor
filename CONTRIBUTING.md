@@ -5,7 +5,7 @@ Thanks for helping. Agent Monitor is in **alpha** (`0.1.0-alpha.x`): the UI, the
 ## Setup
 
 - Node **22.13 or newer** (the built-in `node:sqlite` is required) and **pnpm** (the version is pinned in `package.json` → `packageManager`; `corepack enable` picks it up).
-- Rust (`cargo`, from <https://rustup.rs>) only if you change the search addon in `native/search`, or if no prebuilt addon is available for your platform.
+- Rust (`cargo`, from <https://rustup.rs>) only if you change the search addon in `native/search`, or if no prebuilt addon is available for your platform. On Windows, Rust's default MSVC toolchain also needs the Visual Studio Build Tools with the "Desktop development with C++" workload (MSVC and the Windows SDK).
 
 ```bash
 pnpm install

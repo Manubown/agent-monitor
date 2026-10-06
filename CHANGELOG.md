@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: anything may change between alphas).
 
-## [0.1.0-alpha.1] - 2026-10-05
+## [0.1.0-alpha.1] - 2026-10-06
 
 First public alpha. Everything below is new relative to the private prototype.
 
@@ -28,6 +28,7 @@ First public alpha. Everything below is new relative to the private prototype.
 - **Double-counted usage**: requests copied into forked or resumed Claude Code sessions (`/branch`, `--fork-session`) and forked Codex rollouts are counted once, in the original session.
 - **Codex forks**: a forked rollout could take over its parent's session.
 - **Codex 0.160+ usage**: usage is now read from `token_usage_record` lines (keyed by response id), and Codex cache-write tokens are counted.
+- **Windows archive**: logs read back from the archive got a broken path (`\C\Users\…` instead of `C:\Users\…`), so every log was ingested twice, once live and once from the archive.
 
 ### Changed
 

@@ -181,7 +181,7 @@ Add or override prices in `~/.config/agent-monitor/pricing.json` (USD per millio
 | `AGENT_MONITOR_SYNC_SECONDS` | `5` | background sync interval of the web server |
 | `AGENT_MONITOR_NATIVE` | `native/agent_monitor_search.node` | path of the search addon |
 | `AGENT_MONITOR_BUILD_FROM_SOURCE` | unset | `1` builds the addon with cargo instead of downloading it, `0` forces the download |
-| `AGENT_MONITOR_<ADAPTER>_DIRS` | adapter default | replace an adapter's log directories, `:`-separated, e.g. `AGENT_MONITOR_CLAUDE_CODE_DIRS` |
+| `AGENT_MONITOR_<ADAPTER>_DIRS` | adapter default | replace an adapter's log directories, `:`-separated (`;` on Windows), e.g. `AGENT_MONITOR_CLAUDE_CODE_DIRS` |
 
 ## How it works
 

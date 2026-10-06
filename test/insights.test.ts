@@ -106,11 +106,13 @@ const insertUsage = (db: Db, sessionId: string, seq: number, ts: number, cost: n
 
 // A zone with a half-hour offset, so a bucket computed in UTC (or whole-hour offsets) would land on the wrong day or hour.
 // Worker-thread pools ignore TZ changes for both JS and SQLite alike; expectations come from local Date either way.
+// On Windows only JS (ICU) follows a runtime TZ change; SQLite's 'localtime' (the C runtime) keeps the system zone,
+// so there the test runs in the system zone instead.
 describe("activityHeatmap", () => {
   const savedTz = process.env.TZ;
   let db: Db;
   beforeAll(() => {
-    process.env.TZ = "Asia/Kolkata";
+    if (process.platform !== "win32") process.env.TZ = "Asia/Kolkata";
   });
   afterAll(() => {
     if (savedTz === undefined) delete process.env.TZ;

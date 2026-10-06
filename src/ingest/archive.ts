@@ -42,6 +42,15 @@ export interface ArchivedLog {
   file: string;
 }
 
+/**
+ * Inverse of archivePath for a path relative to the adapter's directory (without ".gz"): restores the root it
+ * stripped. On Windows "C\Users\..." was "C:\Users\..."; anything else was a UNC path "\\server\share\...".
+ */
+function originalPath(rel: string): string {
+  if (process.platform !== "win32") return `/${rel}`;
+  return /^[A-Za-z]\\/.test(rel) ? `${rel[0]}:${rel.slice(1)}` : `\\\\${rel}`;
+}
+
 /** Every archived log; empty when the archive does not exist yet. */
 export async function* listArchive(archiveDir: string): AsyncGenerator<ArchivedLog> {
   let adapters;
@@ -55,7 +64,7 @@ export async function* listArchive(archiveDir: string): AsyncGenerator<ArchivedL
     const base = path.join(archiveDir, dir.name);
     for (const rel of await fs.readdir(base, { recursive: true })) {
       if (!rel.endsWith(".gz")) continue;
-      yield { adapterId: dir.name, original: path.join(path.sep, rel.slice(0, -".gz".length)), file: path.join(base, rel) };
+      yield { adapterId: dir.name, original: originalPath(rel.slice(0, -".gz".length)), file: path.join(base, rel) };
     }
   }
 }
