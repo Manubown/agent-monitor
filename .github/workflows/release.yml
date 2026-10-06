@@ -65,6 +65,8 @@ jobs:
         if: matrix.smoke
         with:
           node-version: 22.x
+          # This job has no pnpm; without this, "packageManager" in package.json turns on pnpm caching and fails.
+          package-manager-cache: false
 
       - name: Smoke test (load addon, open an index)
         if: matrix.smoke
