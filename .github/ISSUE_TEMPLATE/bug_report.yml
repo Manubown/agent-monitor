@@ -1,0 +1,90 @@
+name: Bug report
+description: Something in the dashboard, CLI or sync does not work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Agent Monitor works on private data: session logs hold your prompts, file contents and sometimes secrets.
+        **Never paste real transcripts, database rows or screenshots that show private content.** Redact paths and names, or reproduce with a synthetic session.
+        If the problem is a log the parser cannot read, use the **Log parse error / unsupported format** form instead.
+
+  - type: input
+    id: version
+    attributes:
+      label: Agent Monitor version or commit
+      description: The version from package.json or `git rev-parse --short HEAD`.
+      placeholder: 0.1.0-alpha.1 / a1b2c3d
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Ubuntu 24.04 x64 / macOS 15 arm64 / Windows 11
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      description: Output of `node --version` (22.13 or newer is required).
+      placeholder: v22.13.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent CLI involved
+      description: Which tool's sessions show the problem, if any.
+      multiple: true
+      options:
+        - omp (oh-my-pi)
+        - Claude Code
+        - Codex CLI
+        - Not agent specific
+    validations:
+      required: true
+
+  - type: input
+    id: agent-version
+    attributes:
+      label: Agent CLI version
+      description: e.g. output of `claude --version` or `codex --version`.
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. pnpm build && pnpm start
+        2. Open /sessions and ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include error messages from the terminal or the browser console (redacted).
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: I removed private prompts, file contents, paths, usernames and secrets from everything above.
+          required: true

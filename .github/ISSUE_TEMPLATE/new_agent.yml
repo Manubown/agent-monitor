@@ -1,0 +1,59 @@
+name: New agent support
+description: Ask for an adapter for another AI coding agent CLI.
+labels: ["adapter", "new-agent"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Agent Monitor reads the session logs an agent already writes; each tool gets one adapter in `src/adapters/`.
+        Adapters are tested against **synthetic fixtures only**. Do not attach real logs: describe the format and link its documentation.
+
+  - type: input
+    id: agent
+    attributes:
+      label: Agent name
+      placeholder: e.g. Gemini CLI, Aider, OpenCode
+    validations:
+      required: true
+
+  - type: input
+    id: homepage
+    attributes:
+      label: Agent homepage or repository
+
+  - type: textarea
+    id: location
+    attributes:
+      label: Log location
+      description: Where the agent stores its sessions on each OS, including any environment variable that moves it.
+      placeholder: "~/.example/sessions/**/*.jsonl (EXAMPLE_HOME overrides ~/.example)"
+    validations:
+      required: true
+
+  - type: input
+    id: docs
+    attributes:
+      label: Format documentation
+      description: Link to docs or source code describing the log format, if any.
+
+  - type: textarea
+    id: format
+    attributes:
+      label: What the logs contain
+      description: Prompts, replies, tool calls, token usage, cost, subagents, timestamps... Describe the structure; do not paste real content.
+
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Can you help?
+      options:
+        - label: I can provide a synthetic fixture (a hand-written log with placeholder content in the real format).
+        - label: I am willing to steward this format (check new agent releases and report or fix breakage).
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: I have not attached or pasted real session logs.
+          required: true

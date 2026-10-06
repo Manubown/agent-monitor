@@ -1,8 +1,34 @@
 {
   "name": "agent-monitor",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.1",
   "private": true,
-  "description": "Local monitoring dashboard for AI coding agent sessions (omp, Claude Code, Codex, ...)",
+  "description": "Local dashboard for AI coding agent sessions (omp, Claude Code, Codex): cost, timelines, subagents, file and tool maps, full-text search",
+  "license": "MIT",
+  "author": "Manuel (https://github.com/Manubown)",
+  "homepage": "https://github.com/Manubown/agent-monitor#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Manubown/agent-monitor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Manubown/agent-monitor/issues"
+  },
+  "keywords": [
+    "ai-agents",
+    "coding-agents",
+    "claude-code",
+    "codex",
+    "omp",
+    "dashboard",
+    "observability",
+    "token-usage",
+    "llm-cost",
+    "session-logs",
+    "local-first",
+    "nextjs",
+    "sqlite",
+    "tantivy"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22.13.0"
@@ -17,6 +43,8 @@
     "watch": "tsx src/cli.ts watch",
     "stats": "tsx src/cli.ts stats",
     "sources": "tsx src/cli.ts sources",
+    "demo:data": "tsx scripts/demo.ts generate",
+    "demo": "tsx scripts/demo.ts serve",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

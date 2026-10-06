@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions (Q&A)
+    url: https://github.com/Manubown/agent-monitor/discussions/categories/q-a
+    about: Setup help and usage questions.
+  - name: Ideas
+    url: https://github.com/Manubown/agent-monitor/discussions/categories/ideas
+    about: Open-ended ideas and early feedback before a concrete feature request.
+  - name: Security vulnerability
+    url: https://github.com/Manubown/agent-monitor/security/policy
+    about: Report vulnerabilities privately, never in a public issue.

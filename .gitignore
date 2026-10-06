@@ -6,3 +6,5 @@ data/
 coverage/
 native/search/target/
 native/*.node
+native/prebuilt.json
+.demo/

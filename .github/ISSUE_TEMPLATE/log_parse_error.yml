@@ -1,0 +1,73 @@
+name: Log parse error / unsupported format
+description: A supported agent wrote a log that Agent Monitor skips, misreads or fails on.
+labels: ["adapter", "parse-error"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Agent logs change with every tool release, so these reports are very welcome.
+        **Never paste a real transcript or a real log file, not even a short one.** Real logs contain your prompts, file contents, paths and often secrets, and an issue is public forever.
+        Instead, write a **minimal synthetic snippet**: copy only the structure of the line that fails (field names, nesting, types) and replace every value with placeholder text.
+
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent CLI
+      options:
+        - omp (oh-my-pi)
+        - Claude Code
+        - Codex CLI
+    validations:
+      required: true
+
+  - type: input
+    id: agent-version
+    attributes:
+      label: Agent CLI version
+      description: The version that wrote the log, e.g. output of `claude --version`.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Agent Monitor version or commit
+      placeholder: 0.1.0-alpha.1 / a1b2c3d
+    validations:
+      required: true
+
+  - type: textarea
+    id: symptom
+    attributes:
+      label: What goes wrong
+      description: Missing sessions, wrong token counts or costs, missing tool calls, a sync error...
+    validations:
+      required: true
+
+  - type: textarea
+    id: sync-error
+    attributes:
+      label: Error from Sync status
+      description: Hover the "N failed" sync status in the dashboard header, or run `pnpm sync` and copy the `error:` line. Redact paths.
+      render: text
+
+  - type: textarea
+    id: snippet
+    attributes:
+      label: Minimal synthetic or redacted log snippet
+      description: One to a few JSONL lines with the same shape as the failing ones, every value replaced by placeholder text.
+      render: json
+      placeholder: |
+        {"type":"assistant","timestamp":"2026-01-01T00:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"placeholder"}]}}
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: The snippet above is synthetic or fully redacted. It is not a real transcript and contains no real prompts, replies, tool output or file contents.
+          required: true
+        - label: I removed paths, usernames, hostnames, API keys, tokens and any other secrets.
+          required: true
