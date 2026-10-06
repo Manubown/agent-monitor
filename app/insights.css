@@ -1,0 +1,176 @@
+/* Overview activity heatmap and the errors page (app/components/insights). Tokens only. */
+
+/* ---------- heatmap ---------- */
+
+.hm-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 2px;
+}
+
+.hm-toggle button {
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink-2);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.hm-toggle button:hover {
+  background: var(--hover);
+}
+
+.hm-toggle button[aria-pressed="true"] {
+  background: var(--surface-raised);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.hm {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 40px;
+}
+
+.hm-panel {
+  margin: 0;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.hm-panel figcaption {
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.hm-scroll {
+  overflow-x: auto;
+}
+
+.hm-scroll svg {
+  display: block;
+}
+
+/* Accent ramp mixed into the surface; level 0 is an empty cell, out-of-range padding is barely visible. */
+.hm-l0 {
+  --hm: var(--grid);
+}
+.hm-l1 {
+  --hm: color-mix(in srgb, var(--accent) 28%, var(--surface));
+}
+.hm-l2 {
+  --hm: color-mix(in srgb, var(--accent) 52%, var(--surface));
+}
+.hm-l3 {
+  --hm: color-mix(in srgb, var(--accent) 76%, var(--surface));
+}
+.hm-l4 {
+  --hm: var(--accent);
+}
+.hm-out {
+  --hm: color-mix(in srgb, var(--grid) 35%, transparent);
+}
+
+.hm-cell {
+  fill: var(--hm);
+}
+
+.hm-cell:not(.hm-out):hover {
+  stroke: var(--ink);
+  stroke-width: 1;
+}
+
+.hm-tip {
+  transform: translate(-50%, calc(-100% - 6px));
+}
+
+.hm-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+.hm-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--ink-muted);
+}
+
+.hm-swatch {
+  width: 12px;
+  height: 12px;
+  background: var(--hm);
+}
+
+.hm-swatch:first-of-type {
+  margin-left: 6px;
+}
+
+.hm-swatch:last-of-type {
+  margin-right: 6px;
+}
+
+/* ---------- errors page ---------- */
+
+.er-bars {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) auto auto minmax(80px, 1fr);
+  align-items: center;
+  gap: 6px 14px;
+  font-size: 13px;
+}
+
+.er-bars .num {
+  text-align: right;
+}
+
+/* Pixel bar: 6px cells with 2px gaps in the category's color. */
+.er-bar {
+  height: 10px;
+  background: linear-gradient(90deg, var(--c) 6px, transparent 0) 0 0 / 8px 100% repeat-x;
+  min-width: 6px;
+}
+
+.er-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 8px;
+  vertical-align: -1px;
+  background: var(--c);
+}
+
+.er-zero {
+  color: var(--ink-muted);
+}
+
+.er-examples {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.er-examples h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+
+.er-snippet {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+  white-space: normal;
+}

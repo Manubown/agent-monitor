@@ -1,5 +1,7 @@
 import path from "node:path";
 import { fileOps, isWrite } from "./activity";
+import { detectLoops, loopReason } from "./loops";
+import { isShellTool, shellCommand } from "./shell";
 import type { AgentEvent } from "./types";
 
 /**
@@ -15,7 +17,8 @@ export interface AutoTag {
 }
 
 export interface AutoTagInput {
-  events: readonly Pick<AgentEvent, "ts" | "kind" | "toolName" | "toolInput" | "text" | "isError">[];
+  /** In timeline order; `toolCallId` pairs results with their calls for loop detection. */
+  events: readonly Pick<AgentEvent, "ts" | "kind" | "toolName" | "toolCallId" | "toolInput" | "text" | "isError">[];
   /** Resolves relative file paths in tool arguments. */
   cwd?: string | null;
   gitBranch?: string | null;
@@ -59,7 +62,6 @@ const LANGUAGES: { tag: string; label: string; ext: string[] }[] = [
 
 const LANGUAGE_BY_EXT = new Map(LANGUAGES.flatMap((l) => l.ext.map((e) => [e, l] as const)));
 
-const SHELL_TOOLS = new Set(["bash", "shell", "exec_command", "local_shell", "shell_command", "run_shell_command", "run_terminal_cmd"]);
 const SEARCH_TOOLS = new Set(["grep", "glob", "find", "search", "ast_grep", "codebase_search", "file_search", "ls", "list_dir"]);
 const WEB_TOOLS = new Set(["web_search", "websearch", "web_fetch", "webfetch", "fetch", "search_web", "browser", "browse"]);
 const SUBAGENT_TOOLS = new Set(["task", "agent", "spawn_agent"]);
@@ -77,16 +79,6 @@ const parseArgs = (input: string | undefined): Record<string, unknown> | undefin
     return undefined;
   }
 };
-
-/** The command line of a shell tool call; Codex passes `["bash", "-lc", "<script>"]`. */
-function shellCommand(args: Record<string, unknown> | undefined): string | undefined {
-  const c = args?.command ?? args?.cmd;
-  if (typeof c === "string") return c;
-  if (!Array.isArray(c) || !c.every((x) => typeof x === "string")) return undefined;
-  const argv = c as string[];
-  if (argv.length >= 3 && /(^|\/)(ba|z|da)?sh$/.test(argv[0]) && /^-\w*c$/.test(argv[1])) return argv[2];
-  return argv.join(" ");
-}
 
 /** Wrappers in front of the real command: `sudo`, `env A=1`, `npx`, `pnpm exec`, `uv run`, `python -m`, `timeout 60`. */
 const PREFIXES = new Set(["sudo", "env", "time", "nice", "nohup", "command", "exec"]);
@@ -283,7 +275,7 @@ export function deriveAutoTags(input: AutoTagInput): AutoTag[] {
     if (WEB_TOOLS.has(name) || (name === "read" && typeof target === "string" && /^https?:\/\//.test(target))) web++;
     if (SUBAGENT_TOOLS.has(name)) subagents += Array.isArray(args?.tasks) ? args.tasks.length : 1;
 
-    const commandLine = SHELL_TOOLS.has(name) ? shellCommand(args) : undefined;
+    const commandLine = isShellTool(name) ? shellCommand(args) : undefined;
     if (!commandLine) continue;
     for (const w of commands(commandLine)) {
       const t = testRun(w);
@@ -332,6 +324,8 @@ export function deriveAutoTags(input: AutoTagInput): AutoTag[] {
   }
   if (active > LONG_ACTIVE_MS) tag("long", `${hoursMinutes(active)} of activity`);
   if (!changed.size && lookups + web >= RESEARCH_MIN_LOOKUPS) tag("research", `${lookups + web} reads, searches and fetches; no file changed`);
+  const loops = detectLoops(input.events, cwd);
+  if (loops.length) tag("loop", loopReason(loops, cwd));
 
   return tags.sort((a, b) => (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0));
 }

@@ -138,6 +138,20 @@ describe("other tags", () => {
     expect(tagsOf([...lookups, call("Edit", { file_path: "src/a.ts" })])).toEqual(["typescript"]);
   });
 
+  it("loop: a file edited over and over between failures, a command failing again and again", () => {
+    const edit: Ev = call("Edit", { file_path: "src/a.ts", old_string: "a", new_string: "b" });
+    const cycle = [edit, ok, sh("pnpm test"), fail];
+    const four = [...cycle, ...cycle, ...cycle, ...cycle];
+    expect(reason([...four, edit, ok], "loop")).toBe("src/a.ts edited 5 times; `pnpm test` failed 4 times");
+    // Four edits are not a loop yet, three failures of a command are.
+    expect(reason(four, "loop")).toBe("`pnpm test` failed 4 times");
+    expect(tagsOf([sh("pnpm test"), fail, sh("pnpm test"), fail])).not.toContain("loop");
+    expect(reason([sh("pnpm test"), fail, sh("cd /work/app && pnpm test 2>&1 | tail -20"), fail, sh("pnpm test"), fail], "loop")).toBe("`pnpm test` failed 3 times");
+    // A passing run in between means the failures are separate problems.
+    expect(tagsOf([sh("pnpm test"), fail, sh("pnpm test"), fail, sh("pnpm test"), ok, sh("pnpm test"), fail])).not.toContain("loop");
+    expect(reason(Array.from({ length: 3 }, () => [call("Read", { file_path: "src/gone.ts" }), fail]).flat(), "loop")).toBe("`Read src/gone.ts` failed 3 times");
+  });
+
   it("returns sorted, unique tags", () => {
     const list = [sh("cargo test"), sh("cargo test"), sh("git commit -m x"), call("web_search", { query: "q" }), call("Edit", { file_path: "a.rs" })];
     expect(tagsOf(list)).toEqual(["git", "rust", "tests", "web"]);

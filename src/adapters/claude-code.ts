@@ -1,5 +1,6 @@
 import path from "node:path";
 import { type Adapter, arr, homeDir, jsonLines, num, obj, shellCommand, str, stringifyInput, titleFrom, toMs } from "../core/adapter";
+import { COMPACTION_TEXT } from "../core/compaction";
 import type { AgentEvent, ParsedSession, UsageRecord } from "../core/types";
 
 /**
@@ -8,7 +9,9 @@ import type { AgentEvent, ParsedSession, UsageRecord } from "../core/types";
  *
  * One API response is written as several lines (one per content block), each
  * repeating the same `message.id` and `usage`, so usage is deduplicated by
- * message id. The log has no cost field; cost is estimated from list prices.
+ * message id. Forked and resumed sessions copy earlier lines into a new file;
+ * `requestId` (message id + request id) lets storage count those once. The log
+ * has no cost field; cost is estimated from list prices.
  */
 export const claudeCodeAdapter: Adapter = {
   id: "claude-code",
@@ -40,6 +43,7 @@ const blockText = (content: unknown): string => {
 
 export function parseClaudeCode(filePath: string, content: string): ParsedSession | null {
   const sub = SUBAGENT_PATH.exec(filePath);
+  let dispatchIndex: number | undefined;
   let sessionId: string | undefined;
   let cwd: string | undefined;
   let gitBranch: string | undefined;
@@ -48,6 +52,8 @@ export function parseClaudeCode(filePath: string, content: string): ParsedSessio
   let aiTitle: string | undefined;
   let summary: string | undefined;
   let firstTs: number | undefined;
+  // A fork (/branch, --fork-session) starts with copies of the original's lines, marked `forkedFrom`; it started at its first own line.
+  let firstOwnTs: number | undefined;
   let lastTs = 0;
   const events: AgentEvent[] = [];
   const usageById = new Map<string, UsageRecord>();
@@ -57,6 +63,7 @@ export function parseClaudeCode(filePath: string, content: string): ParsedSessio
     const ts = toMs(line.timestamp);
     if (ts !== undefined) {
       if (firstTs === undefined || ts < firstTs) firstTs = ts;
+      if (!obj(line.forkedFrom) && (firstOwnTs === undefined || ts < firstOwnTs)) firstOwnTs = ts;
       if (ts > lastTs) lastTs = ts;
     }
     const at = ts ?? lastTs;
@@ -79,7 +86,7 @@ export function parseClaudeCode(filePath: string, content: string): ParsedSessio
         if (line.level === "error" || line.subtype === "api_error") {
           events.push({ ts: at, kind: "error", text: str(line.content) ?? "API error", isError: true });
         } else if (line.subtype === "compact_boundary") {
-          events.push({ ts: at, kind: "system", text: "Conversation compacted" });
+          events.push({ ts: at, kind: "system", text: COMPACTION_TEXT });
         }
         break;
       case "user": {
@@ -89,7 +96,10 @@ export function parseClaudeCode(filePath: string, content: string): ParsedSessio
         const meta = line.isMeta === true || line.isCompactSummary === true || line.isSidechain === true || sub !== null;
         const pushText = (text: string) => {
           if (!text.trim()) return;
-          events.push({ ts: at, kind: meta || INJECTED.test(text) ? "system" : "user", text });
+          const injected = INJECTED.test(text);
+          // A subagent's first real "user" text is the task its parent sent.
+          if (sub !== null && dispatchIndex === undefined && line.isMeta !== true && line.isCompactSummary !== true && !injected) dispatchIndex = events.length;
+          events.push({ ts: at, kind: meta || injected ? "system" : "user", text });
         };
         if (typeof message.content === "string") {
           pushText(message.content);
@@ -155,6 +165,8 @@ export function parseClaudeCode(filePath: string, content: string): ParsedSessio
             },
             cacheWrite1h: num(obj(u.cache_creation)?.ephemeral_1h_input_tokens),
             reportedCostUsd: typeof line.costUSD === "number" ? line.costUSD : undefined,
+            // Forks (/branch, --fork-session) and resumes copy these lines verbatim into the new transcript.
+            requestId: str(message.id) ? `${str(message.id)}:${str(line.requestId) ?? ""}` : undefined,
           });
         }
         break;
@@ -175,11 +187,12 @@ export function parseClaudeCode(filePath: string, content: string): ParsedSessio
     source: "claude-code",
     nativeId: sub ? `${sub[1]}/${sub[2]}` : (sessionId ?? path.basename(filePath, ".jsonl")),
     parentNativeId: sub?.[1],
+    dispatchIndex,
     title: customTitle || aiTitle || summary || titleFrom(firstUser),
     cwd,
     gitBranch,
     agentVersion,
-    startedAt: firstTs ?? lastTs,
+    startedAt: firstOwnTs ?? firstTs ?? lastTs,
     endedAt: lastTs,
     events,
     usage,

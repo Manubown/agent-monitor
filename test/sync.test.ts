@@ -8,6 +8,7 @@ import { DEFAULT_PRICES } from "../src/core/pricing";
 import type { IndexDoc, SearchIndex } from "../src/search/native";
 import { type Db, openDb } from "../src/store/db";
 import { byModel, byTool, getSession, listSessions, overview, sessionEvents, syncStatus } from "../src/store/queries";
+import { dispatchPrompts } from "../src/store/dispatch";
 
 interface Ctx {
   db: Db;
@@ -83,6 +84,14 @@ describe("sync", () => {
     expect(detail.children.map((c) => c.id)).toEqual(["claude-code:sess-1/agent-xyz"]);
     expect(detail.session.costSource).toBe("estimated");
     expect(getSession(ctx.db, "claude-code:sess-1/agent-xyz")?.parent?.id).toBe("claude-code:sess-1");
+  });
+
+  it("keeps the prompt each subagent was dispatched with", async () => {
+    await sync();
+    const prompts = dispatchPrompts(ctx.db, ["omp:aaa111", "omp:bbb222", "claude-code:sess-1/agent-xyz"]);
+    // Top-level sessions have none; subagents get exactly what their parent sent.
+    expect(Object.keys(prompts).sort()).toEqual(["claude-code:sess-1/agent-xyz", "omp:bbb222"]);
+    expect(prompts["omp:bbb222"]).toBe("research the auth library");
   });
 
   it("filters by source, directory, search and time", async () => {

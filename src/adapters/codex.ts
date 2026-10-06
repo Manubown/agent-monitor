@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { type Adapter, arr, homeDir, jsonLines, num, obj, shellCommand, str, stringifyInput, titleFrom, toMs } from "../core/adapter";
-import type { AgentEvent, ParsedSession, UsageRecord } from "../core/types";
+import { COMPACTION_TEXT, isCompactionMarker } from "../core/compaction";
+import type { AgentEvent, ParsedSession, TokenUsage, UsageRecord } from "../core/types";
 
 /**
  * Codex CLI: $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl (and
@@ -8,8 +10,20 @@ import type { AgentEvent, ParsedSession, UsageRecord } from "../core/types";
  *
  * Token usage arrives as cumulative `token_count` events, so each request's
  * usage is the delta between consecutive totals; that also makes repeated
- * token_count events harmless. OpenAI counts cached tokens inside
- * input_tokens, so they are subtracted to match the schema's `input`.
+ * token_count events harmless. OpenAI counts cached tokens (reads and writes)
+ * inside input_tokens, so they are subtracted to match the schema's `input`.
+ *
+ * Codex 0.160+ also writes a `token_usage_record` per model response, keyed by
+ * `response_id`, just before the token_count with the new total. Records take
+ * precedence: a token_count only adds usage when no record arrived since the
+ * previous total, and still advances the baseline either way, so a rollout
+ * that switches CLI versions midway counts every request once.
+ *
+ * A forked rollout (or a subagent spawned with its parent's history) starts
+ * with a verbatim copy of the parent's lines, its session_meta and
+ * token_count events included, and its running total carries on from there.
+ * The copied session_meta is ignored and each usage record carries a
+ * `requestId` so storage counts the copied requests once.
  */
 export const codexAdapter: Adapter = {
   id: "codex",
@@ -31,6 +45,9 @@ export const codexAdapter: Adapter = {
 const UUID_SUFFIX = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
 const INJECTED = /^\s*(<environment_context>|<user_instructions>|<permissions instructions>|<user_shell_command>|# AGENTS\.md)/;
+
+/** Whether `e` is a compaction marker, so the second record of the same compaction is not logged twice. */
+const isCompactionAt = (e: AgentEvent | undefined): boolean => e !== undefined && isCompactionMarker(e.kind, e.text);
 
 const contentText = (content: unknown): string =>
   arr(content)
@@ -65,20 +82,55 @@ const toolOutput = (output: unknown): { text?: string; isError: boolean } => {
 interface Totals {
   input: number;
   cached: number;
+  cacheWrite: number;
   output: number;
   reasoning: number;
 }
 
+const NO_TOKENS: Totals = { input: 0, cached: 0, cacheWrite: 0, output: 0, reasoning: 0 };
+
+/** A Codex token-usage object (`total_token_usage`, `last_token_usage`, a usage record's `usage`). */
+const totalsOf = (u: Record<string, unknown>): Totals => ({
+  input: num(u.input_tokens),
+  cached: num(u.cached_input_tokens),
+  cacheWrite: num(u.cache_write_input_tokens),
+  output: num(u.output_tokens),
+  reasoning: num(u.reasoning_output_tokens),
+});
+
+/** Usage between two snapshots. OpenAI counts cache reads and writes inside input_tokens; the schema's `input` excludes both. */
+function usageBetween(from: Totals, to: Totals): TokenUsage {
+  const cacheRead = Math.max(0, to.cached - from.cached);
+  const cacheWrite = Math.max(0, to.cacheWrite - from.cacheWrite);
+  return {
+    input: Math.max(0, to.input - from.input - cacheRead - cacheWrite),
+    output: Math.max(0, to.output - from.output),
+    cacheRead,
+    cacheWrite,
+    reasoning: Math.max(0, to.reasoning - from.reasoning),
+  };
+}
+
+const payloadId = (p: Record<string, unknown>): string => createHash("sha1").update(JSON.stringify(p)).digest("hex");
+
 export function parseCodex(filePath: string, content: string): ParsedSession | null {
   let nativeId: string | undefined;
   let parentNativeId: string | undefined;
+  let firstPrompt: number | undefined;
+  let lastPrompt: number | undefined;
+  /** The rollout replays a parent's history (fork, or a subagent spawned with context). */
+  let replayed = false;
   let cwd: string | undefined;
   let gitBranch: string | undefined;
   let agentVersion: string | undefined;
   let startedAt: number | undefined;
   let lastTs = 0;
   let model = "unknown";
-  let previous: Totals = { input: 0, cached: 0, output: 0, reasoning: 0 };
+  let previous: Totals = NO_TOKENS;
+  /** A token_usage_record arrived since the last running total; that total adds nothing new. */
+  let coveredByRecord = false;
+  /** Usage the last token_count added, in case its token_usage_record follows it. */
+  let lastCounted: UsageRecord | undefined;
   const events: AgentEvent[] = [];
   const usage: UsageRecord[] = [];
   const toolNames = new Map<string, string>();
@@ -90,6 +142,11 @@ export function parseCodex(filePath: string, content: string): ParsedSession | n
     if (!p) continue;
 
     if (line.type === "session_meta") {
+      // A fork's rollout replays its parent's lines, the parent's session_meta included.
+      if (nativeId && str(p.id) && str(p.id) !== nativeId) {
+        replayed = true;
+        continue;
+      }
       nativeId = str(p.id) ?? nativeId;
       cwd = str(p.cwd) ?? cwd;
       agentVersion = str(p.cli_version) ?? agentVersion;
@@ -97,6 +154,9 @@ export function parseCodex(filePath: string, content: string): ParsedSession | n
       startedAt ??= toMs(p.timestamp) ?? ts;
       const spawn = obj(obj(obj(p.source)?.subagent)?.thread_spawn);
       parentNativeId = str(spawn?.parent_thread_id) ?? parentNativeId;
+    } else if (line.type === "compacted") {
+      // History replaced by a summary; newer CLIs also log a `context_compacted` event for the same compaction.
+      if (!isCompactionAt(events.at(-1))) events.push({ ts, kind: "system", text: COMPACTION_TEXT });
     } else if (line.type === "turn_context") {
       model = str(p.model) ?? model;
     } else if (line.type === "response_item") {
@@ -104,9 +164,19 @@ export function parseCodex(filePath: string, content: string): ParsedSession | n
         case "message": {
           const text = contentText(p.content);
           if (!text) break;
-          if (p.role === "assistant") events.push({ ts, kind: "assistant", text, model });
-          else if (p.role === "user") events.push({ ts, kind: INJECTED.test(text) ? "system" : "user", text });
-          else events.push({ ts, kind: "system", text });
+          if (p.role === "assistant") {
+            events.push({ ts, kind: "assistant", text, model });
+          } else if (p.role === "user") {
+            const injected = INJECTED.test(text);
+            // A subagent's dispatch prompt: its first prompt, or the last one when the parent's history was replayed first.
+            if (!injected) {
+              firstPrompt ??= events.length;
+              lastPrompt = events.length;
+            }
+            events.push({ ts, kind: injected ? "system" : "user", text });
+          } else {
+            events.push({ ts, kind: "system", text });
+          }
           break;
         }
         case "reasoning": {
@@ -136,16 +206,23 @@ export function parseCodex(filePath: string, content: string): ParsedSession | n
           break;
         }
       }
+    } else if (line.type === "token_usage_record") {
+      // Codex >= 0.160: one line per model response, before the token_count carrying the running total.
+      const u = obj(p.usage);
+      if (!u) continue;
+      coveredByRecord = true;
+      const record: UsageRecord = { ts, model, usage: usageBetween(NO_TOKENS, totalsOf(u)), requestId: `codex:${str(p.response_id) ?? payloadId(p)}` };
+      // Should a token_count come first after all, the record replaces the request it already counted.
+      if (lastCounted && lastCounted.usage.input === record.usage.input && lastCounted.usage.output === record.usage.output && lastCounted.usage.cacheRead === record.usage.cacheRead) {
+        usage.splice(usage.indexOf(lastCounted), 1);
+      }
+      lastCounted = undefined;
+      usage.push(record);
     } else if (line.type === "event_msg") {
       if (p.type === "token_count") {
         const total = obj(obj(p.info)?.total_token_usage);
         if (!total) continue;
-        const current: Totals = {
-          input: num(total.input_tokens),
-          cached: num(total.cached_input_tokens),
-          output: num(total.output_tokens),
-          reasoning: num(total.reasoning_output_tokens),
-        };
+        const current = totalsOf(total);
         const dInput = current.input - previous.input;
         const dOutput = current.output - previous.output;
         if (dInput < 0 || dOutput < 0) {
@@ -154,21 +231,26 @@ export function parseCodex(filePath: string, content: string): ParsedSession | n
           continue;
         }
         if (dInput === 0 && dOutput === 0) continue;
-        const dCached = Math.max(0, current.cached - previous.cached);
-        usage.push({
+        const between = usageBetween(previous, current);
+        previous = current;
+        // token_usage_record lines already counted the requests since the last total.
+        if (coveredByRecord) {
+          coveredByRecord = false;
+          continue;
+        }
+        lastCounted = {
           ts,
           model,
-          usage: {
-            input: Math.max(0, dInput - dCached),
-            output: dOutput,
-            cacheRead: dCached,
-            cacheWrite: 0,
-            reasoning: Math.max(0, current.reasoning - previous.reasoning),
-          },
-        });
-        previous = current;
+          usage: between,
+          // Forks and history-sharing subagents replay the parent's token_count lines verbatim
+          // (running totals and rate-limit snapshot included), so the payload identifies the request.
+          requestId: `codex:${payloadId(p)}`,
+        };
+        usage.push(lastCounted);
       } else if (p.type === "error" || p.type === "stream_error") {
         events.push({ ts, kind: "error", text: str(p.message) ?? "Error", isError: true });
+      } else if (p.type === "context_compacted") {
+        if (!isCompactionAt(events.at(-1))) events.push({ ts, kind: "system", text: COMPACTION_TEXT });
       } else if (p.type === "turn_aborted") {
         events.push({ ts, kind: "system", text: `Turn aborted${str(p.reason) ? `: ${str(p.reason)}` : ""}` });
       }
@@ -181,6 +263,7 @@ export function parseCodex(filePath: string, content: string): ParsedSession | n
     source: "codex",
     nativeId: nativeId ?? path.basename(filePath, ".jsonl"),
     parentNativeId,
+    dispatchIndex: parentNativeId ? (replayed ? lastPrompt : firstPrompt) : undefined,
     title: titleFrom(firstUser),
     cwd,
     gitBranch,

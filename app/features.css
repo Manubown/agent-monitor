@@ -399,3 +399,27 @@ a.tag-auto:hover {
   color: var(--ink-muted);
   font-style: italic;
 }
+
+/* ---------- dispatch prompts (what a subagent was told) ---------- */
+
+.dispatch-prompt {
+  max-height: 320px;
+}
+
+.dispatch-row {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--ink-2);
+  max-width: 64ch;
+}
+
+.dispatch-row > summary {
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dispatch-row[open] > summary {
+  white-space: normal;
+}

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useId, useRef, useState, useTransition } from "react";
+import { useEffect, useId, useOptimistic, useRef, useState, useTransition } from "react";
 import { useFormStatus } from "react-dom";
 import type { AutoTag } from "../../src/core/autotags";
 import { addTag, removeTag } from "../actions";
@@ -15,7 +15,9 @@ export function Nav() {
   const links = [
     { href: "/", label: "Overview", active: pathname === "/" },
     { href: "/sessions", label: "Sessions", active: pathname.startsWith("/sessions") },
+    { href: "/projects", label: "Projects", active: pathname.startsWith("/projects") },
     { href: "/usage", label: "Usage windows", active: pathname.startsWith("/usage") },
+    { href: "/errors", label: "Errors", active: pathname.startsWith("/errors") },
   ];
   return (
     <nav className="nav">
@@ -361,23 +363,44 @@ const KINDS = [
   { id: "error", label: "Errors", color: "var(--kind-error)" },
 ];
 
-/** Toggles which event kinds the timeline shows; filtering is pure CSS on the server-rendered list. */
-export function TimelineFilter({ counts, children }: { counts: Record<string, number>; children: React.ReactNode }) {
-  const [hidden, setHidden] = useState<string[]>(["thinking", "system"]);
-  const toggle = (id: string) => setHidden((h) => (h.includes(id) ? h.filter((k) => k !== id) : [...h, id]));
+/**
+ * Toggles which event types the timeline shows. The filter lives in the URL
+ * (`?kinds=`) and is applied by the server, so paging runs over the matching
+ * events only; `hrefs` holds each chip's toggled URL plus `all`.
+ */
+export function TimelineFilter({ counts, shown, hrefs }: { counts: Record<string, number>; shown: string[]; hrefs: Record<string, string> }) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [optimistic, setOptimistic] = useOptimistic(shown);
+  const go = (href: string, next: string[]) =>
+    startTransition(() => {
+      setOptimistic(next);
+      router.push(href, { scroll: false });
+    });
+  const chips = KINDS.filter((k) => counts[k.id] || shown.includes(k.id));
+  const all = chips.map((k) => k.id);
   return (
-    <>
-      <div className="timeline-controls" role="group" aria-label="Show event types">
-        {KINDS.filter((k) => counts[k.id]).map((k) => (
-          <button key={k.id} type="button" className="chip" aria-pressed={!hidden.includes(k.id)} onClick={() => toggle(k.id)}>
+    <div className="timeline-controls" role="group" aria-label="Show event types" aria-busy={pending || undefined}>
+      {chips.map((k) => {
+        const on = optimistic.includes(k.id);
+        return (
+          <button
+            key={k.id}
+            type="button"
+            className="chip"
+            aria-pressed={on}
+            onClick={() => go(hrefs[k.id], on ? optimistic.filter((x) => x !== k.id) : [...optimistic, k.id])}
+          >
             <span className="ev-dot" style={{ background: k.color, marginTop: 0 }} />
-            {k.label} <span className="muted">{counts[k.id]}</span>
+            {k.label} <span className="muted">{counts[k.id] ?? 0}</span>
           </button>
-        ))}
-      </div>
-      <div className="timeline" data-hide={hidden.join(" ")}>
-        {children}
-      </div>
-    </>
+        );
+      })}
+      {all.some((k) => !optimistic.includes(k)) && (
+        <button type="button" className="chip" onClick={() => go(hrefs.all, all)}>
+          Show all
+        </button>
+      )}
+    </div>
   );
 }

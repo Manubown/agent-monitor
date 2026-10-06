@@ -18,7 +18,9 @@ import {
   sessionEvents,
   sessionEventTimeline,
   TIMELINE_PAGE,
+  timelinePage,
   timelineWindow,
+  parseTimelineKinds,
 } from "../src/store/queries";
 
 const T = Date.UTC(2026, 9, 1, 12); // range start used by the time-filter tests
@@ -358,6 +360,36 @@ describe("timeline paging", () => {
     for (let seq = 0; seq < 10; seq++) insert.run(seq, T + seq, `e${seq}`);
     expect(sessionEvents(db, "omp:big", 3, 6).map((e) => e.seq)).toEqual([3, 4, 5]);
     expect(sessionEvents(db, "omp:big", 8).map((e) => e.seq)).toEqual([8, 9]);
-    expect(getSession(db, "omp:big")?.kindCounts).toEqual({ assistant: 10 });
+    expect(getSession(db, "omp:big")?.timelineCounts).toEqual({ user: 0, assistant: 10, thinking: 0, tools: 0, system: 0, error: 0 });
+  });
+
+  it("pages over the events of the selected types only", () => {
+    const db = openDb(":memory:");
+    insertSession(db, { id: "omp:mix", startedAt: T, endedAt: T + H });
+    const insert = db.prepare("INSERT INTO events (session_id, seq, ts, kind, text, is_error) VALUES ('omp:mix', ?, ?, ?, ?, ?)");
+    // Three replies early on, then far more than a page of tool traffic with one failure.
+    for (let seq = 0; seq < 3; seq++) insert.run(seq, T + seq, "assistant", `reply ${seq}`, 0);
+    for (let seq = 3; seq < 3 + 2 * TIMELINE_PAGE; seq++) insert.run(seq, T + seq, seq % 2 ? "tool_call" : "tool_result", null, seq === 100 ? 1 : 0);
+
+    const replies = timelinePage(db, "omp:mix", { kinds: ["assistant"] });
+    expect(replies.events.map((e) => e.seq)).toEqual([0, 1, 2]);
+    expect(replies).toMatchObject({ from: 0, to: 3, total: 3, tail: true });
+
+    // "error" covers failed tool results even with the tools chip off.
+    expect(timelinePage(db, "omp:mix", { kinds: ["error"] }).events.map((e) => e.seq)).toEqual([100]);
+    expect(getSession(db, "omp:mix")?.timelineCounts).toMatchObject({ assistant: 3, tools: TIMELINE_PAGE, error: 1 });
+
+    // A hit of a hidden type stays listed and the page is centered on it among the matches.
+    const hit = timelinePage(db, "omp:mix", { kinds: ["assistant"], at: 250 });
+    expect(hit.events.map((e) => e.seq)).toEqual([0, 1, 2, 250]);
+    // Paging around a hit keeps the explicit range.
+    expect(timelinePage(db, "omp:mix", { kinds: ["tools"], at: 250, from: 0, to: 5 }).events.map((e) => e.seq)).toEqual([3, 4, 5, 6, 7]);
+    expect(timelinePage(db, "omp:mix", { kinds: [] }).events).toEqual([]);
+  });
+
+  it("reads the kinds parameter", () => {
+    expect(parseTimelineKinds(undefined)).toEqual(["user", "assistant", "tools", "error"]);
+    expect(parseTimelineKinds("")).toEqual([]);
+    expect(parseTimelineKinds("error,bogus,user")).toEqual(["user", "error"]);
   });
 });

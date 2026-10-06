@@ -46,6 +46,12 @@ export interface UsageRecord {
   cacheWrite1h?: number;
   /** Cost as recorded by the tool itself, if it records one. Takes precedence over estimates. */
   reportedCostUsd?: number;
+  /**
+   * Identity of the API request, when the log carries one. Tools copy earlier
+   * requests into new log files (Claude Code forks and resumes, Codex forks and
+   * history-sharing subagents); storage counts each id once across sessions.
+   */
+  requestId?: string;
 }
 
 export interface ParsedSession {
@@ -55,6 +61,8 @@ export interface ParsedSession {
   nativeId: string;
   /** Native id of the session that spawned this one (subagents). */
   parentNativeId?: string;
+  /** Subagents: index in `events` of the instructions the spawning agent sent (the dispatch prompt). */
+  dispatchIndex?: number;
   title?: string;
   cwd?: string;
   gitBranch?: string;

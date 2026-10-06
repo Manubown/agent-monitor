@@ -11,6 +11,17 @@ export interface ChartSeries {
   values: number[];
 }
 
+/** A vertical rule on the boundary before column `index` (`labels.length` = after the last column). */
+export interface ChartMarker {
+  index: number;
+  /** Short text drawn above the plot, e.g. "-120k". */
+  label: string;
+  /** Longer description for the tooltip, the column's accessible name and the table view. */
+  title?: string;
+  /** Drawn dashed and muted, e.g. for inferred events. */
+  dashed?: boolean;
+}
+
 interface Props {
   /** Full label per column, used in the tooltip and the table view. */
   labels: string[];
@@ -20,6 +31,8 @@ interface Props {
   format: "usd" | "tokens";
   /** Optional extra tooltip lines per column. */
   notes?: string[][];
+  /** Optional boundary markers; the plot gains a strip above it for their labels. */
+  markers?: ChartMarker[];
   height?: number;
   ariaLabel: string;
 }
@@ -45,7 +58,7 @@ function niceScale(max: number, count = 4): { top: number; step: number } {
 /** Nearest whole number of cells, in px. */
 const snap = (px: number) => Math.round(px / CELL) * CELL;
 
-export function StackedBarChart({ labels, ticks, series, format, notes, height = 220, ariaLabel }: Props) {
+export function StackedBarChart({ labels, ticks, series, format, notes, markers = [], height = 220, ariaLabel }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [active, setActive] = useState<number | null>(null);
@@ -62,15 +75,17 @@ export function StackedBarChart({ labels, ticks, series, format, notes, height =
 
   const n = labels.length;
   const totals = labels.map((_, i) => series.reduce((sum, s) => sum + (s.values[i] ?? 0), 0));
+  const markerText = new Map(markers.map((m) => [m.index, m.title ?? m.label]));
+  const marginTop = MARGIN.top + (markers.length ? 14 : 0);
   const { top, step } = niceScale(Math.max(0, ...totals));
   const plotW = Math.max(0, width - MARGIN.left - MARGIN.right);
-  const plotH = height - MARGIN.top - MARGIN.bottom;
+  const plotH = height - marginTop - MARGIN.bottom;
   const band = n ? plotW / n : 0;
   const barW = Math.max(1, Math.min(24, band * 0.7));
   // Bars at least two cells wide are cut into square cells; narrower ones (many requests) only into rows.
   const columns = barW >= 2 * CELL;
-  const baseline = MARGIN.top + plotH;
-  const y = (v: number) => MARGIN.top + plotH - (v / top) * plotH;
+  const baseline = marginTop + plotH;
+  const y = (v: number) => marginTop + plotH - (v / top) * plotH;
   const tickEvery = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(plotW / 64))));
   const axisTicks = Array.from({ length: Math.round(top / step) + 1 }, (_, i) => i * step);
 
@@ -129,7 +144,7 @@ export function StackedBarChart({ labels, ticks, series, format, notes, height =
                   key={label}
                   className="chart-col"
                   tabIndex={0}
-                  aria-label={`${label}: ${fmt(totals[i])}`}
+                  aria-label={`${label}: ${fmt(totals[i])}${markerText.has(i) ? `, ${markerText.get(i)}` : ""}`}
                   onPointerEnter={() => setActive(i)}
                   onFocus={() => setActive(i)}
                   onBlur={() => setActive(null)}
@@ -137,7 +152,7 @@ export function StackedBarChart({ labels, ticks, series, format, notes, height =
                   <rect
                     className="chart-hit"
                     x={MARGIN.left + band * i}
-                    y={MARGIN.top}
+                    y={marginTop}
                     width={band}
                     height={plotH}
                     fill={active === i ? "var(--hover)" : "transparent"}
@@ -150,6 +165,27 @@ export function StackedBarChart({ labels, ticks, series, format, notes, height =
                       {(ticks ?? labels)[i]}
                     </text>
                   )}
+                </g>
+              );
+            })}
+            {markers.map((m) => {
+              const mx = Math.round(MARGIN.left + band * m.index) + 0.5;
+              const right = mx > width - 64;
+              return (
+                <g key={`${m.index}-${m.label}`} pointerEvents="none" aria-hidden="true">
+                  <line
+                    x1={mx}
+                    x2={mx}
+                    y1={MARGIN.top + 2}
+                    y2={baseline}
+                    stroke={m.dashed ? "var(--ink-muted)" : "var(--ink-2)"}
+                    strokeWidth={1}
+                    strokeDasharray={m.dashed ? "2 2" : undefined}
+                    shapeRendering="crispEdges"
+                  />
+                  <text className="chart-tick" x={right ? mx - 4 : mx + 4} y={MARGIN.top + 9} textAnchor={right ? "end" : "start"} style={{ fill: "var(--ink-2)" }}>
+                    {m.label}
+                  </text>
                 </g>
               );
             })}
@@ -176,6 +212,7 @@ export function StackedBarChart({ labels, ticks, series, format, notes, height =
                 {line}
               </div>
             ))}
+            {markerText.has(active) && <div className="tooltip-name">{markerText.get(active)}</div>}
           </div>
         )}
       </div>
@@ -197,7 +234,10 @@ export function StackedBarChart({ labels, ticks, series, format, notes, height =
             <tbody>
               {labels.map((label, i) => (
                 <tr key={label}>
-                  <td>{label}</td>
+                  <td>
+                    {label}
+                    {markerText.has(i) && <span className="muted"> · {markerText.get(i)}</span>}
+                  </td>
                   {series.map((s) => (
                     <td key={s.key} className="num">
                       {format === "usd" ? usd(s.values[i] ?? 0) : integer(s.values[i] ?? 0)}

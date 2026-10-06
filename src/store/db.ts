@@ -10,7 +10,7 @@ export type Db = DatabaseSync;
  * dropped and rebuilt from the live logs plus the raw-log archive on next sync.
  * User data (tags) lives in user.db and is never dropped.
  */
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 const SCHEMA = `
 CREATE TABLE meta (
@@ -33,6 +33,7 @@ CREATE TABLE sessions (
   source             TEXT NOT NULL,
   native_id          TEXT NOT NULL,
   parent_id          TEXT,                      -- spawning session (subagents)
+  dispatch_seq       INTEGER,                   -- subagents: seq of the event holding the dispatch prompt
   file_path          TEXT NOT NULL,
   title              TEXT,
   cwd                TEXT,
@@ -87,9 +88,11 @@ CREATE TABLE usage (
   reasoning    INTEGER NOT NULL,
   cost_usd     REAL,
   cost_source  TEXT NOT NULL,
+  request_id   TEXT,                            -- UsageRecord.requestId; each id is stored in one session only
   PRIMARY KEY (session_id, seq)
 );
 CREATE INDEX usage_ts ON usage(ts);
+CREATE INDEX usage_request ON usage(request_id) WHERE request_id IS NOT NULL;
 
 CREATE TABLE auto_tags (
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

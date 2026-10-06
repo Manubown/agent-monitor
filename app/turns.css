@@ -1,0 +1,50 @@
+/* Session page: "Context per request" agent picker and the "Turns" table (app/components/turns). Tokens only. */
+
+.card-head:has(.ctx-agent) > .muted {
+  margin-left: auto;
+}
+
+.ctx-agent {
+  flex: none;
+}
+
+.turns td {
+  white-space: nowrap;
+}
+
+.turns .turn-prompt {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Tool calls of the turn by category; width relative to the busiest turn, cut into 3px cells like .meter. */
+.turn-bar {
+  display: inline-block;
+  width: 64px;
+  height: 6px;
+  margin-left: 8px;
+  vertical-align: middle;
+  background: linear-gradient(90deg, var(--meter-track) 3px, transparent 0) 0 0 / 4px 100% repeat-x;
+}
+
+.turn-bar-fill {
+  display: flex;
+  height: 100%;
+  min-width: 3px;
+  /* Mask luminance, not a theme color: the gaps between cells. */
+  mask: linear-gradient(90deg, black 3px, transparent 0) 0 0 / 4px 100% repeat-x;
+}
+
+.turn-bar-fill > span {
+  flex-basis: 0;
+}
+
+.turn-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 10px;
+  font-size: 12px;
+}

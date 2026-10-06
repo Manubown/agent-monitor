@@ -1,0 +1,202 @@
+/* "File heat" on the session page (app/components/FileHeat.tsx). Tokens only; call rows reuse .sa-row from graph.css. */
+
+.fh {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.fh ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.fh-flag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 5px;
+  border: 1px solid var(--critical);
+  border-radius: 0;
+  color: var(--critical);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  vertical-align: 1px;
+}
+
+/* Retry loops */
+
+.fh-loops {
+  border: 1px solid var(--critical);
+  background: var(--critical-wash);
+}
+
+.fh-loop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.fh-loop:last-child {
+  border-bottom: none;
+}
+
+.fh-loop .fh-flag {
+  margin-left: 0;
+}
+
+.fh-loop-subject {
+  min-width: 0;
+  max-width: 48ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+
+.fh-loop .sa-agent {
+  max-width: 24ch;
+}
+
+.fh-loop-links {
+  display: inline-flex;
+  gap: 10px;
+  margin-left: auto;
+  font-size: 12px;
+}
+
+/* Files */
+
+.fh-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-size: 12px;
+}
+
+.fh-files {
+  border-top: 1px solid var(--border);
+}
+
+.fh-file {
+  border-bottom: 1px solid var(--border);
+}
+
+.fh-hot {
+  background: var(--critical-wash);
+}
+
+.fh-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(80px, 220px) 44px auto 130px;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 6px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 13px;
+}
+
+.fh-row::-webkit-details-marker {
+  display: none;
+}
+
+.fh-row:hover {
+  background: var(--hover);
+}
+
+.fh-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+
+.fh-path::before {
+  content: "▸ ";
+  color: var(--ink-muted);
+}
+
+details[open] > .fh-row .fh-path::before {
+  content: "▾ ";
+}
+
+/* Track and fill drawn as 3px cells with 1px gaps, like .meter and the pixel bars. */
+.fh-bar {
+  display: block;
+  height: 8px;
+  background: linear-gradient(90deg, var(--grid) 3px, transparent 0) 0 0 / 4px 100% repeat-x;
+}
+
+.fh-fill {
+  display: flex;
+  height: 100%;
+  mask: linear-gradient(90deg, currentColor 3px, transparent 0) 0 0 / 4px 100% repeat-x;
+}
+
+.fh-fill > span {
+  min-width: 4px;
+  background: currentColor;
+}
+
+.fh-agents {
+  display: inline-flex;
+  gap: 8px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.fh-when {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.fh .fh-calls {
+  max-height: 320px;
+  overflow: auto;
+  margin: 0 0 6px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.fh-calls > li:last-child .sa-row {
+  border-bottom: none;
+}
+
+.fh-in-loop {
+  background: var(--critical-wash);
+}
+
+.fh-more > summary {
+  display: inline-block;
+  margin-top: 10px;
+  list-style: none;
+}
+
+.fh-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.fh-more[open] > summary {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .fh-row {
+    grid-template-columns: minmax(0, 1fr) 80px 36px;
+  }
+
+  .fh-agents,
+  .fh-when {
+    display: none;
+  }
+}

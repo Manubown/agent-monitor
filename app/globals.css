@@ -771,16 +771,6 @@ tbody tr:hover {
   font-weight: 600;
 }
 
-.timeline[data-hide~="user"] .ev[data-kind="user"],
-.timeline[data-hide~="assistant"] .ev[data-kind="assistant"],
-.timeline[data-hide~="thinking"] .ev[data-kind="thinking"],
-.timeline[data-hide~="tools"] .ev[data-kind="tool_call"],
-.timeline[data-hide~="tools"] .ev[data-kind="tool_result"],
-.timeline[data-hide~="system"] .ev[data-kind="system"],
-.timeline[data-hide~="error"] .ev[data-kind="error"] {
-  display: none;
-}
-
 .meta {
   display: flex;
   flex-wrap: wrap;

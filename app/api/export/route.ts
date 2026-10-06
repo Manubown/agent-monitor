@@ -3,6 +3,7 @@ import type { Db } from "../../../src/store/db";
 import { byModel, byProject, daily, type Filters, isSessionSort, listSessions, type SessionSort, type SessionSummary } from "../../../src/store/queries";
 import { filtersFrom, ready, type SearchParams } from "../../lib/server";
 import { type Cell, toCsv } from "./csv";
+import { gourceExport } from "./gource";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -91,12 +92,14 @@ const slug = (s: string): string =>
     .replace(/^-+|-+$/g, "")
     .slice(0, 40);
 
-/** GET /api/export?view=sessions|daily|models|projects&format=csv|json plus the page filters (range, source, project, q, tag) and, for sessions, sort. */
+/** GET /api/export?view=sessions|daily|models|projects&format=csv|json plus the page filters (range, source, project, q, tag) and, for sessions, sort; view=gource: see gource.ts. */
 export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const params: SearchParams = Object.fromEntries(url.searchParams);
   const name = url.searchParams.get("view") ?? "sessions";
   const format = url.searchParams.get("format") ?? "csv";
+  // Gource custom log of a session tree or a project (see gource.ts); not a table, so outside VIEWS.
+  if (name === "gource") return gourceExport(await ready(), url);
   const v = VIEWS[name];
   if (!v) return new Response(`Unknown view "${name}"; use ${Object.keys(VIEWS).join(", ")}.`, { status: 400 });
   if (format !== "csv" && format !== "json") return new Response(`Unknown format "${format}"; use csv or json.`, { status: 400 });

@@ -1,13 +1,16 @@
 import os from "node:os";
 import path from "node:path";
 import { type FileOp, fileOps } from "../core/activity";
+import { type ResourceKind, type ResourceRef, toolResources } from "../core/resources";
 import type { Db } from "./db";
 
 /**
  * What a session tree (the session plus every subagent, recursively) did:
- * one action per tool call, prompt/error markers and per-file operation
- * counts. Everything is plain and compact so it can go straight to a client
- * component: agents and files are referenced by index, texts are clipped.
+ * one action per tool call, prompt/error markers, per-file operation counts
+ * and the other resources calls worked on (commands, URLs, searches,
+ * subagents, other tools). Everything is plain and compact so it can go
+ * straight to a client component: agents, files and resources are referenced
+ * by index, texts are clipped.
  */
 
 export type ActionCategory = "read" | "write" | "search" | "shell" | "web" | "agent" | "other";
@@ -26,6 +29,8 @@ export interface ActivityAgent {
   slot: number;
   /** Index in `actions` of the call that spawned this agent, when it could be matched. */
   spawn: number | null;
+  /** The instructions the spawning agent sent (subagents only), one line, clipped. */
+  prompt?: string;
 }
 
 export interface ActivityAction {
@@ -40,6 +45,8 @@ export interface ActivityAction {
   error?: true;
   /** Indices in `files` this call touched. */
   files?: number[];
+  /** Indices in `resources` this call worked on. */
+  res?: number[];
 }
 
 export interface ActivityMarker {
@@ -71,12 +78,33 @@ export interface ActivityFile extends OpCounts {
   actions: number[];
 }
 
+export type { ResourceKind };
+
+/** A non-file thing calls worked on: a command head, URL or web search, search pattern, spawned agent or tool. */
+export interface ActivityResource {
+  kind: ResourceKind;
+  label: string;
+  /** Binary, domain ("search" for web searches), search tool, spawning agent's title, MCP server or "tools". */
+  group: string;
+  /** For `agent` resources: index in `agents` of the spawned agent, when matched. */
+  agent?: number;
+  first: number;
+  last: number;
+  calls: number;
+  errors: number;
+  /** Calls per agent, by agent index ascending. */
+  agents: { agent: number; calls: number; errors: number }[];
+  /** Indices in `actions`, in time order per agent. */
+  actions: number[];
+}
+
 export interface SessionActivity {
   cwd: string | null;
   agents: ActivityAgent[];
   actions: ActivityAction[];
   markers: ActivityMarker[];
   files: ActivityFile[];
+  resources: ActivityResource[];
 }
 
 const LABEL_MAX = 60;
@@ -161,6 +189,7 @@ interface AgentRow {
   cwd: string | null;
   startedAt: number;
   endedAt: number;
+  prompt: string | null;
 }
 
 interface EventRow {
@@ -201,8 +230,9 @@ export function sessionActivity(db: Db, sessionId: string, home: string = os.hom
       `WITH RECURSIVE tree(id, depth) AS (
          SELECT ?, 0 UNION ALL SELECT c.id, tree.depth + 1 FROM sessions c JOIN tree ON c.parent_id = tree.id WHERE tree.depth < 64)
        SELECT s.id, s.parent_id AS parentId, s.title, s.native_id AS nativeId, s.file_path AS filePath, s.cwd,
-              s.started_at AS startedAt, s.ended_at AS endedAt
-       FROM tree JOIN sessions s ON s.id = tree.id`,
+              s.started_at AS startedAt, s.ended_at AS endedAt, substr(d.text, 1, 600) AS prompt
+       FROM tree JOIN sessions s ON s.id = tree.id
+       LEFT JOIN events d ON d.session_id = s.id AND d.seq = s.dispatch_seq`,
     )
     .all(sessionId) as unknown as AgentRow[];
   const rootRow = rows.find((r) => r.id === sessionId);
@@ -235,6 +265,7 @@ export function sessionActivity(db: Db, sessionId: string, home: string = os.hom
     endedAt: row.endedAt,
     slot: (i % 7) + 1,
     spawn: null,
+    ...(row.prompt?.trim() ? { prompt: clip(row.prompt, 400) } : {}),
   }));
 
   const cwd = rootRow.cwd;
@@ -242,8 +273,25 @@ export function sessionActivity(db: Db, sessionId: string, home: string = os.hom
   const markers: ActivityMarker[] = [];
   const files: ActivityFile[] = [];
   const fileIndex = new Map<string, number>();
+  const resources: ActivityResource[] = [];
+  const resourceIndex = new Map<string, number>();
   /** Per agent: spawn calls, to link subagents to the call that started them. */
   const spawnCalls: { action: number; ts: number; input: string }[][] = agents.map(() => []);
+
+  /** Link a call to a resource; counts are summed once errors are known. */
+  const use = (action: number, r: ResourceRef & { agent?: number }) => {
+    const id = `${r.kind}\u0000${r.key}`;
+    let i = resourceIndex.get(id);
+    if (i === undefined) {
+      i = resources.length;
+      resourceIndex.set(id, i);
+      const ts = actions[action].ts;
+      resources.push({ kind: r.kind, label: r.label, group: r.group, ...(r.agent !== undefined ? { agent: r.agent } : {}), first: ts, last: ts, calls: 0, errors: 0, agents: [], actions: [] });
+    }
+    const a = actions[action];
+    if (!a.res) a.res = [i];
+    else if (!a.res.includes(i)) a.res.push(i);
+  };
 
   const touch = (raw: string, agent: number, action: number, ts: number, kind: Exclude<FileOp["op"], "search">) => {
     // One key per file however it was written: `~/x` and `/home/me/x`, composed and decomposed umlauts.
@@ -320,6 +368,11 @@ export function sessionActivity(db: Db, sessionId: string, home: string = os.hom
         touch(op.path, agent, index, e.ts, op.op);
         if (op.to) touch(op.to, agent, index, e.ts, "move");
       }
+      const where = (p: string) => {
+        const abs = p.startsWith("~/") || path.posix.isAbsolute(p) || !agentCwd ? p : path.posix.join(agentCwd, p);
+        return displayPath(abs.startsWith("~/") && home ? path.posix.join(home, abs.slice(2)) : abs, cwd, home);
+      };
+      for (const r of toolResources(tool, args, e.toolInput, where)) use(index, r);
       if (Object.hasOwn(SPAWN, tool.toLowerCase())) spawnCalls[agent].push({ action: index, ts: e.ts, input: e.toolInput ?? "" });
     } else if (e.kind === "tool_result") {
       // Pair by call id; results without one belong to the latest call of the same tool.
@@ -345,6 +398,40 @@ export function sessionActivity(db: Db, sessionId: string, home: string = os.hom
     agents[i].spawn = (named ?? before)?.action ?? null;
   }
 
+  // Spawn calls work on the agents they started; calls nothing matched stay one resource per label.
+  for (let i = 1; i < agents.length; i++) {
+    const spawn = agents[i].spawn;
+    const parent = agents[i].parent;
+    if (spawn === null || parent === null) continue;
+    use(spawn, { kind: "agent", key: `#${i}`, label: agents[i].title, group: agents[parent].title, agent: i });
+  }
+  for (const calls of spawnCalls) {
+    for (const c of calls) {
+      const a = actions[c.action];
+      if (!a.res?.some((r) => resources[r].kind === "agent")) use(c.action, { kind: "agent", key: `?${a.label}`, label: a.label || a.tool, group: "unmatched" });
+    }
+  }
+  // Everything else is the tool itself.
+  actions.forEach((a, i) => {
+    if (!a.files && !a.res) use(i, { kind: "tool", key: a.tool, label: clip(a.tool), group: "tools" });
+  });
+
+  actions.forEach((a, i) => {
+    for (const r of a.res ?? []) {
+      const res = resources[r];
+      res.calls++;
+      if (a.error) res.errors++;
+      res.first = Math.min(res.first, a.ts);
+      res.last = Math.max(res.last, a.ts);
+      let by = res.agents.find((x) => x.agent === a.agent);
+      if (!by) res.agents.push((by = { agent: a.agent, calls: 0, errors: 0 }));
+      by.calls++;
+      if (a.error) by.errors++;
+      res.actions.push(i);
+    }
+  });
+
   for (const f of files) f.agents.sort((x, y) => x.agent - y.agent);
-  return { cwd, agents, actions, markers, files };
+  for (const r of resources) r.agents.sort((x, y) => x.agent - y.agent);
+  return { cwd, agents, actions, markers, files, resources };
 }

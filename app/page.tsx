@@ -8,6 +8,10 @@ import { type ChartSeries, StackedBarChart } from "./components/StackedBarChart"
 import { Cost, Empty, ExportLinks, Meter, ProjectCell, PulseDot, SourceBadge, sourceColor, TagList, Tile } from "./components/ui";
 import { ago, dayRange, duration, integer, localDay, per, project, shortDay, tokens, usd } from "./lib/format";
 import { filtersFrom, RANGES, ready, type SearchParams } from "./lib/server";
+import { HEATMAP_WEEKS } from "../src/core/heatmap";
+import { activityHeatmap } from "../src/store/insights";
+import { ActivityHeatmap } from "./components/insights/ActivityHeatmap";
+import { projectMapHref } from "./components/projects/links";
 
 const EVENT_LABEL: Record<string, string> = {
   user: "Prompt",
@@ -192,6 +196,12 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
             </section>
           </div>
 
+          <ActivityHeatmap
+            data={activityHeatmap(db, f, now)}
+            rangeNote={f.from === undefined ? `last ${HEATMAP_WEEKS} weeks` : rangeLabel}
+            timeZone={Intl.DateTimeFormat().resolvedOptions().timeZone}
+          />
+
           <div className="grid-2">
             <section className="card" id="token-mix">
               <div className="card-head">
@@ -310,6 +320,11 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
                       <tr key={p.cwd ?? ""} className="row-click">
                         <td>
                           <ProjectCell cwd={p.cwd} />
+                          {p.cwd && (
+                            <Link className="cell-sub" href={projectMapHref(p.cwd, { range: f.range, source: f.source })}>
+                              File map →
+                            </Link>
+                          )}
                         </td>
                         <td className="num">{integer(p.sessions)}</td>
                         <td className="num">{tokens(totalTokens(p))}</td>

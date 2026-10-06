@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { invertTime, mapQuery, parseMapFilters, passes } from "../app/components/graph/resourceMap";
 import { activeSpans, timeScale, timeTicks } from "../app/components/graph/timeScale";
+import { commandHeads, urlResource } from "../src/core/resources";
 import { type Db, openDb } from "../src/store/db";
 import { categorize, clip, displayPath, sessionActivity } from "../src/store/activity";
 
@@ -239,5 +241,117 @@ describe("timeScale", () => {
       expect(ticks[i].x - ticks[i - 1].x).toBeGreaterThanOrEqual(80);
       expect(ticks[i].ts % (5 * MIN)).toBe(0);
     }
+  });
+});
+
+describe("resources", () => {
+  it("normalizes shell command heads", () => {
+    const heads = (c: string) => commandHeads(c).map((h) => h.head);
+    expect(heads("cd /work/proj && pnpm test 2>&1 | tail -5")).toEqual(["pnpm test"]);
+    expect(heads("git -C /repo commit -m 'a; b && c'")).toEqual(["git commit"]);
+    expect(heads("FOO=1 timeout 60 cargo build --release; pnpm run build\n/usr/bin/git status")).toEqual(["cargo build", "pnpm run build", "git status"]);
+    expect(heads("cat <<'EOF' > notes.md\nrm -rf /\nEOF\nls -la")).toEqual(["cat", "ls"]);
+    expect(heads("python3 -m pytest -q # run the tests")).toEqual(["python3 -m pytest"]);
+    expect(heads("cd sub")).toEqual(["cd"]);
+    expect(heads("for f in a b; do wc -l $f; done")).toEqual(["wc"]);
+    expect(heads("if grep -q x notes.md; then echo found; fi")).toEqual(["grep"]);
+    expect(commandHeads("sudo -u me docker compose up")).toEqual([{ head: "docker compose", binary: "docker" }]);
+  });
+
+  it("keys URLs without fragment and groups them by host", () => {
+    expect(urlResource("https://www.example.com/docs/a?x=1#part")).toEqual({
+      kind: "web",
+      key: "https://www.example.com/docs/a?x=1",
+      label: "example.com/docs/a?x=1",
+      group: "example.com",
+    });
+    expect(urlResource("https://example.com/").label).toBe("example.com");
+  });
+
+  it("collects what each call worked on, with per-agent counts and errors", () => {
+    insertSession(db, "omp:root", { title: "Root", cwd: "/work/proj" });
+    insertSession(db, "omp:sub", { parentId: "omp:root", title: "Helper", startedAt: T + 20, file: "/logs/root/Alpha.jsonl" });
+    insertEvents(db, "omp:root", [
+      { ts: T, kind: "tool_call", tool: "bash", callId: "1", input: { command: "cd /work/proj && pnpm test" } },
+      { ts: T + 1, kind: "tool_result", tool: "bash", callId: "1", error: true },
+      { ts: T + 2, kind: "tool_call", tool: "exec_command", callId: "2", input: { cmd: ["bash", "-lc", "git commit -m x"] } },
+      { ts: T + 3, kind: "tool_call", tool: "WebFetch", callId: "3", input: { url: "https://www.example.com/docs/a#intro" } },
+      { ts: T + 4, kind: "tool_call", tool: "read", callId: "4", input: { path: "https://www.example.com/docs/a" } },
+      { ts: T + 5, kind: "tool_call", tool: "web_search", callId: "5", input: { query: "Rust  napi\nbindings" } },
+      { ts: T + 6, kind: "tool_call", tool: "grep", callId: "6", input: { pattern: "TODO", path: "src" } },
+      { ts: T + 7, kind: "tool_call", tool: "glob", callId: "7", input: { path: "/work/proj/app/*.tsx" } },
+      { ts: T + 8, kind: "tool_call", tool: "mcp__github__create_issue", callId: "8", input: { title: "x" } },
+      { ts: T + 9, kind: "tool_call", tool: "todo", callId: "9", input: { op: "init" } },
+      { ts: T + 10, kind: "tool_call", tool: "task", callId: "10", input: { tasks: [{ name: "Alpha" }] } },
+      { ts: T + 11, kind: "tool_call", tool: "read", callId: "11", input: { path: "src/a.ts" } },
+    ]);
+    insertEvents(db, "omp:sub", [{ ts: T + 30, kind: "tool_call", tool: "bash", callId: "1", input: { command: "pnpm test --watch=false" } }]);
+
+    const act = sessionActivity(db, "omp:root", "/home/me")!;
+    const res = (label: string) => act.resources.find((r) => r.label === label)!;
+    const call = (ts: number) => act.actions.findIndex((a) => a.ts === ts);
+
+    expect(res("pnpm test")).toMatchObject({
+      kind: "command",
+      group: "pnpm",
+      calls: 2,
+      errors: 1,
+      first: T,
+      last: T + 30,
+      agents: [
+        { agent: 0, calls: 1, errors: 1 },
+        { agent: 1, calls: 1, errors: 0 },
+      ],
+    });
+    expect(res("pnpm test").actions).toEqual([call(T), call(T + 30)]);
+    expect(res("git commit")).toMatchObject({ kind: "command", group: "git", calls: 1, errors: 0 });
+    // A fetch and a read of the same page are one resource.
+    expect(res("example.com/docs/a")).toMatchObject({ kind: "web", group: "example.com", calls: 2 });
+    expect(res("Rust napi bindings")).toMatchObject({ kind: "web", group: "search" });
+    expect(res("TODO · src")).toMatchObject({ kind: "search", group: "grep" });
+    expect(res("app/*.tsx")).toMatchObject({ kind: "search", group: "glob" });
+    expect(res("create_issue")).toMatchObject({ kind: "tool", group: "mcp__github" });
+    expect(res("todo")).toMatchObject({ kind: "tool", group: "tools" });
+    expect(res("Helper")).toMatchObject({ kind: "agent", group: "Root", agent: 1, actions: [call(T + 10)] });
+
+    // Calls point at their resources; plain file reads only at files.
+    expect(act.actions[call(T)].res!.map((r) => act.resources[r].label)).toEqual(["pnpm test"]);
+    expect(act.actions[call(T + 11)].res).toBeUndefined();
+    expect(act.actions[call(T + 11)].files).toHaveLength(1);
+  });
+
+  it("carries the dispatch prompt of subagents", () => {
+    insertSession(db, "omp:root");
+    insertSession(db, "omp:sub", { parentId: "omp:root", startedAt: T + 10 });
+    insertEvents(db, "omp:sub", [{ ts: T + 10, kind: "user", text: "Fix   the\nparser" }]);
+    db.prepare("UPDATE sessions SET dispatch_seq = 0 WHERE id = 'omp:sub'").run();
+    const act = sessionActivity(db, "omp:root", "/home/me")!;
+    expect(act.agents.map((a) => a.prompt)).toEqual([undefined, "Fix the parser"]);
+  });
+});
+
+describe("resource map filters", () => {
+  it("round-trips through the query string and drops defaults", () => {
+    const f = parseMapFilters({ hide: "web,bogus,files", changed: "1", errors: "0", agent: "omp:a", from: String(T + MIN), to: String(T) });
+    expect(f).toEqual({ hide: ["files", "web"], changed: true, errors: false, agent: "omp:a", from: T, to: T + MIN });
+    expect(parseMapFilters(Object.fromEntries(new URLSearchParams(mapQuery(f))))).toEqual(f);
+    expect(mapQuery(parseMapFilters({}))).toBe("");
+  });
+
+  it("filters calls by time, agent and failure", () => {
+    const f = { ...parseMapFilters({}), from: T, to: T + MIN, errors: true };
+    const a = { agent: 1, seq: 0, ts: T + 1, tool: "bash", cat: "shell" as const, label: "" };
+    expect(passes({ ...a, error: true }, f, 1)).toBe(true);
+    expect(passes(a, f, 1)).toBe(false);
+    expect(passes({ ...a, error: true }, f, 0)).toBe(false);
+    expect(passes({ ...a, error: true, ts: T + 2 * MIN }, f, null)).toBe(false);
+  });
+
+  it("inverts the compressed time axis", () => {
+    const times = [T, T + 10 * MIN, T + 310 * MIN, T + 320 * MIN];
+    const s = timeScale(times, 100, 436, { breakPx: 36, minPx: 8 });
+    for (const t of [T, T + 5 * MIN, T + 160 * MIN, T + 315 * MIN, T + 320 * MIN]) expect(invertTime(s, s.x(t))).toBeCloseTo(t, -2);
+    expect(invertTime(s, 0)).toBe(T);
+    expect(invertTime(s, 9999)).toBe(T + 320 * MIN);
   });
 });

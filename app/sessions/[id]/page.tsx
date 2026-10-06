@@ -3,12 +3,33 @@ import { notFound } from "next/navigation";
 import { adapterById } from "../../../src/adapters";
 import { totalTokens } from "../../../src/core/types";
 import { sessionActivity } from "../../../src/store/activity";
-import { allTags, type EventRow, getSession, isActive, sessionEvents, sessionEventTimeline, TIMELINE_PAGE, timelineWindow } from "../../../src/store/queries";
+import { dispatchPrompts } from "../../../src/store/dispatch";
+import { sessionFlame } from "../../../src/store/flame";
+import { sessionLoops } from "../../../src/store/loops";
+import {
+  allTags,
+  DEFAULT_TIMELINE_KINDS,
+  type EventRow,
+  getSession,
+  isActive,
+  parseTimelineKinds,
+  sessionEventTimeline,
+  TIMELINE_KINDS,
+  TIMELINE_PAGE,
+  type TimelineKind,
+  timelinePage,
+} from "../../../src/store/queries";
+import { sessionContext, sessionTurns } from "../../../src/store/turns";
 import { CopyCommand, TagEditor, TimelineFilter } from "../../components/client";
+import { FileHeat } from "../../components/FileHeat";
+import { FlameGraph } from "../../components/graph/FlameGraph";
 import { SessionActivity } from "../../components/graph/SessionActivity";
 import { PixelBand } from "../../components/pixel/PixelBand";
-import { StackedBarChart } from "../../components/StackedBarChart";
 import { Cost, Meter, PulseDot, SourceBadge, Tile } from "../../components/ui";
+import { ContextCard } from "../../components/turns/ContextCard";
+import { TurnsCard } from "../../components/turns/TurnsCard";
+import { GourceLinks } from "../../components/projects/GourceLinks";
+import { projectMapHref } from "../../components/projects/links";
 import { clock, dateTime, duration, integer, per, tokens, usd } from "../../lib/format";
 import { ready, type SearchParams } from "../../lib/server";
 
@@ -107,36 +128,48 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
   const db = await ready();
   const detail = getSession(db, decodeURIComponent(id));
   if (!detail) notFound();
-  const { session: s, parent, root, children, kindCounts, usage, tools } = detail;
+  const { session: s, parent, root, children, timelineCounts, tools } = detail;
   const live = isActive(s.total.lastActive, Date.now());
   // Subagents cannot be resumed on their own; offer the top-level session they belong to.
   const resume = adapterById(root.source)?.resumeCommand?.({ nativeId: root.nativeId, cwd: root.cwd ?? undefined, filePath: root.filePath });
 
-  const win = timelineWindow(s.eventCount, { from: seqParam(query.from), to: seqParam(query.to), at: seqParam(query.at) });
-  const events = sessionEvents(db, s.id, win.from, win.to);
-  const pageHref = (from: number, to: number | null) => {
+  const kinds = parseTimelineKinds(query.kinds);
+  const at = seqParam(query.at);
+  const win = timelinePage(db, s.id, { kinds, from: seqParam(query.from), to: seqParam(query.to), at });
+  const events = win.events;
+  /** Timeline URL; `at` stays so a search hit remains listed while paging or filtering around it. */
+  const timelineHref = (shown: readonly TimelineKind[], p: { from?: number; to?: number | null; at?: number } = {}) => {
     const qs = new URLSearchParams();
-    if (from > 0 || to !== null) qs.set("from", String(from));
-    if (to !== null) qs.set("to", String(to));
+    const isDefault = shown.length === DEFAULT_TIMELINE_KINDS.length && shown.every((k) => DEFAULT_TIMELINE_KINDS.includes(k));
+    if (!isDefault) qs.set("kinds", shown.join(","));
+    if (p.at !== undefined) qs.set("at", String(p.at));
+    if (p.from !== undefined && (p.from > 0 || p.to != null)) qs.set("from", String(p.from));
+    if (p.to != null) qs.set("to", String(p.to));
     return `/sessions/${encodeURIComponent(s.id)}${qs.size ? `?${qs}` : ""}`;
   };
+  const pageHref = (from: number, to: number | null) => timelineHref(kinds, { from, to, at });
   const earlier = Math.min(TIMELINE_PAGE, win.from);
   const later = Math.min(TIMELINE_PAGE, win.total - win.to);
+  const chipHrefs: Record<string, string> = {
+    all: timelineHref(TIMELINE_KINDS.filter((k) => timelineCounts[k] > 0), { at }),
+  };
+  for (const k of TIMELINE_KINDS) {
+    chipHrefs[k] = timelineHref(kinds.includes(k) ? kinds.filter((x) => x !== k) : TIMELINE_KINDS.filter((x) => x === k || kinds.includes(x)), { at });
+  }
 
   const own = { input: s.input, output: s.output, cacheRead: s.cacheRead, cacheWrite: s.cacheWrite };
-  // Chip keys of the timeline filter: tool calls and their results share one "tools" chip counted by calls.
-  const counts: Record<string, number> = {};
-  for (const [kind, n] of Object.entries(kindCounts)) {
-    if (kind === "tool_result") continue;
-    const key = kind === "tool_call" ? "tools" : kind;
-    counts[key] = (counts[key] ?? 0) + n;
-  }
   const maxTool = Math.max(1, ...tools.map((t) => t.calls));
   const lastActive = Math.max(s.total.lastActive, s.endedAt);
+  // What this subagent was told to do, and what each of its own subagents was told.
+  const prompts = dispatchPrompts(db, [s.id, ...children.map((c) => c.id)]);
+  const dispatch = prompts[s.id];
   const contextCache = s.input + s.cacheRead + s.cacheWrite;
   // Tool calls of the whole tree (this session and its subagents) for "What it did".
   const activity = s.total.toolCalls > 0 ? sessionActivity(db, s.id) : null;
   const timeline = sessionEventTimeline(db, s.id);
+  // Model requests per agent of the tree (with compactions) and per-prompt turns for "Context per request" and "Turns".
+  const context = sessionContext(db, s.id);
+  const turns = sessionTurns(db, s.id);
   const treeEvents = timeline ? timeline.counts.reduce((a, b) => a + b, 0) : 0;
 
   return (
@@ -188,7 +221,7 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
           </div>
           <div>
             <dt>Directory</dt>
-            <dd className="mono">{s.cwd ?? "—"}</dd>
+            <dd className="mono">{s.cwd ? <Link href={projectMapHref(s.cwd)} title="File map of this project across sessions">{s.cwd}</Link> : "—"}</dd>
           </div>
           {s.gitBranch && (
             <div>
@@ -223,8 +256,29 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
               <CopyCommand command={resume} label={root.id === s.id ? "Copy resume command" : "Copy the parent session's resume command"} />
             </span>
           )}
+          {s.total.toolCalls > 0 && <GourceLinks params={{ session: s.id }} />}
         </div>
       </div>
+
+      {dispatch && (
+        <section className="card dispatch">
+          <div className="card-head">
+            <h2>Dispatch prompt</h2>
+            <span className="muted">
+              instructions this subagent received
+              {parent && (
+                <>
+                  {" from "}
+                  <Link href={`/sessions/${encodeURIComponent(parent.id)}`}>{parent.title || parent.id}</Link>
+                </>
+              )}
+              {" · "}
+              <Link href={`/sessions/${encodeURIComponent(s.id)}?at=${s.dispatchSeq}#e-${s.dispatchSeq}`}>show in timeline</Link>
+            </span>
+          </div>
+          <pre className="ev-pre dispatch-prompt">{dispatch}</pre>
+        </section>
+      )}
 
       <div className="tiles">
         <Tile
@@ -239,23 +293,9 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
         <Tile label="Cache hit rate" value={contextCache ? `${Math.round((s.cacheRead / contextCache) * 100)}%` : "—"} note="this session" />
       </div>
 
-      {usage.length > 0 && (
-        <section className="card">
-          <div className="card-head">
-            <h2>Context per request</h2>
-            <span className="muted">input + cache tokens sent with each model call, this session</span>
-          </div>
-          <StackedBarChart
-            labels={usage.map((u, i) => `Request ${i + 1} · ${clock(u.ts)}`)}
-            ticks={usage.map((_, i) => String(i + 1))}
-            series={[{ key: "context", label: "Context tokens", color: "var(--series-1)", values: usage.map((u) => u.input + u.cacheRead + u.cacheWrite) }]}
-            notes={usage.map((u) => [`${tokens(u.output)} output · ${usd(u.cost)}${u.costSource === "estimated" ? " est." : ""}`, u.model])}
-            format="tokens"
-            height={180}
-            ariaLabel="Context tokens per model request"
-          />
-        </section>
-      )}
+      {context.length > 0 && <ContextCard agents={context} />}
+
+      {turns.length > 0 && <TurnsCard sessionId={s.id} turns={turns} />}
 
       {activity && activity.actions.length > 0 && (
         <section className="card">
@@ -264,9 +304,38 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
             <span className="muted">
               {integer(activity.actions.length)} tool calls
               {activity.agents.length > 1 ? ` across this session and ${activity.agents.length - 1} subagents` : ", this session"}
+              {" · "}
+              <Link href={`/sessions/${encodeURIComponent(s.id)}/graph`}>Open full map →</Link>
             </span>
           </div>
           <SessionActivity data={activity} />
+        </section>
+      )}
+
+      {activity && activity.actions.length > 0 && (
+        <section className="card" id="flame">
+          <div className="card-head">
+            <h2>Flame</h2>
+            <span className="muted">
+              {activity.agents.length > 1
+                ? "each agent under its spawner, its tool calls below it; click an agent to zoom in"
+                : "tool calls with their durations; click one to open it in the timeline"}
+            </span>
+          </div>
+          <FlameGraph agents={activity.agents} actions={activity.actions} flame={sessionFlame(db, activity)} />
+        </section>
+      )}
+
+      {activity && activity.actions.length > 0 && (
+        <section className="card" id="file-heat">
+          <div className="card-head">
+            <h2>File heat</h2>
+            <span className="muted">
+              {integer(activity.files.length)} files touched, hottest first
+              {activity.agents.length > 1 ? `, across this session and ${activity.agents.length - 1} subagents` : ", this session"}
+            </span>
+          </div>
+          <FileHeat data={activity} loops={sessionLoops(db, activity)} />
         </section>
       )}
 
@@ -360,6 +429,12 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
                       <Link className="row-link" href={`/sessions/${encodeURIComponent(c.id)}`}>
                         {c.title || c.nativeId}
                       </Link>
+                      {prompts[c.id] && (
+                        <details className="dispatch-row">
+                          <summary>{firstLine(prompts[c.id], 140)}</summary>
+                          <pre className="ev-pre dispatch-prompt">{prompts[c.id]}</pre>
+                        </details>
+                      )}
                     </td>
                     <td className="mono">{c.models[0] ?? "—"}</td>
                     <td className="num">{duration(c.endedAt - c.startedAt)}</td>
@@ -384,17 +459,21 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
             {s.filePath}
           </span>
         </div>
-        <TimelineFilter counts={counts}>
+        <TimelineFilter counts={timelineCounts} shown={kinds} hrefs={chipHrefs} />
+        <div className="timeline">
           {win.from > 0 && (
             <div className="timeline-pager">
               <span className="muted">
-                Events {integer(win.from + 1)}–{integer(win.to)} of {integer(win.total)}
+                Events {integer(win.from + 1)}–{integer(win.to)} of {integer(win.total)} matching
               </span>
               <Link href={pageHref(win.from - earlier, win.tail ? null : win.to)} scroll={false}>
                 Show {integer(earlier)} earlier
               </Link>
-              <Link href={pageHref(0, Math.min(win.total, TIMELINE_PAGE))}>Jump to start</Link>
+              <Link href={timelineHref(kinds, { from: 0, to: Math.min(win.total, TIMELINE_PAGE) })}>Jump to start</Link>
             </div>
+          )}
+          {events.length === 0 && (
+            <p className="muted">{kinds.length ? "No events of the selected types." : "No event types selected."}</p>
           )}
           {events.map((e) => (
             <div key={e.seq} id={`e-${e.seq}`} className={e.kind === "error" ? "ev ev-error" : "ev"} data-kind={e.kind}>
@@ -416,10 +495,10 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
               <Link href={pageHref(win.from, win.to + later >= win.total ? null : win.to + later)} scroll={false}>
                 Show {integer(later)} later
               </Link>
-              <Link href={`/sessions/${encodeURIComponent(s.id)}`}>Jump to latest</Link>
+              <Link href={timelineHref(kinds)}>Jump to latest</Link>
             </div>
           )}
-        </TimelineFilter>
+        </div>
       </section>
     </>
   );

@@ -1,0 +1,434 @@
+/* Resource map (/sessions/[id]/graph, app/components/graph/ResourceMap.tsx). Tokens only. */
+
+.rm-page-head {
+  align-items: flex-start;
+}
+
+.rm-page-head h1 {
+  margin: 4px 0 2px;
+}
+
+.rm {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rm-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.rm-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.rm-chips .chip:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.rm-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--border);
+}
+
+.rm-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.rm-search input {
+  font: inherit;
+  font-size: 13px;
+  width: 240px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.rm-search input:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+
+/* Time range */
+
+.rm-brush-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+.rm-brush-plot {
+  touch-action: none;
+}
+
+.rm-brush-svg {
+  display: block;
+  cursor: crosshair;
+  user-select: none;
+}
+
+.rm-brush-bar {
+  fill: var(--series-1);
+  opacity: 0.7;
+}
+
+.rm-brush-break {
+  fill: var(--hover);
+}
+
+.rm-brush-out {
+  fill: var(--surface);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.rm-brush-sel {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1;
+  cursor: grab;
+}
+
+.rm-brush-handle {
+  fill: var(--accent);
+  opacity: 0.25;
+  cursor: ew-resize;
+  outline: none;
+}
+
+.rm-brush-handle:hover,
+.rm-brush-handle:focus-visible {
+  opacity: 1;
+}
+
+.rm-focus .mono {
+  margin-right: 10px;
+}
+
+.rm-prompt {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* Graph + panel */
+
+.rm-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.rm-body-panel {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 380px);
+}
+
+@media (max-width: 960px) {
+  .rm-body-panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.rm-plot {
+  min-width: 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.rm-svg {
+  display: block;
+}
+
+.rm-empty {
+  padding: 16px 0;
+}
+
+.rm-section {
+  fill: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.rm-section .rm-detail {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* Fixed viewport: agents pinned left, resources scroll, edges drawn on top in viewport coordinates. */
+.rm-view {
+  position: relative;
+  overflow: hidden;
+}
+
+.rm-agents,
+.rm-rows {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.rm-agents {
+  left: 0;
+  scrollbar-width: thin;
+}
+
+.rm-rows {
+  right: 0;
+}
+
+.rm-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+.rm-edge path {
+  fill: none;
+  opacity: var(--rm-edge-opacity, 0.5);
+}
+
+.rm-edge .rm-edge-error {
+  stroke: var(--kind-error);
+  stroke-dasharray: 2 3;
+  opacity: 0.9;
+}
+
+.rm-lit .rm-edge path {
+  opacity: 0.05;
+}
+
+.rm-lit .rm-edge.rm-on path {
+  opacity: 1;
+}
+
+.rm-tree {
+  fill: none;
+  stroke: var(--baseline);
+  stroke-width: 1;
+}
+
+.rm-node,
+.rm-head-row {
+  cursor: pointer;
+  outline: none;
+}
+
+.rm-dim {
+  opacity: 0.3;
+}
+
+.rm-selected.rm-dim,
+.rm-match.rm-dim {
+  opacity: 1;
+}
+
+.rm-idle {
+  opacity: 0.45;
+}
+
+.rm-hit {
+  fill: transparent;
+}
+
+.rm-node:hover .rm-hit,
+.rm-head-row:hover .rm-hit {
+  fill: var(--hover);
+}
+
+.rm-node:focus-visible .rm-hit,
+.rm-head-row:focus-visible .rm-hit,
+.rm-agent:focus-visible .rm-pill {
+  fill: var(--hover);
+  stroke: var(--accent);
+  stroke-width: 1;
+}
+
+.rm-selected .rm-hit {
+  fill: var(--hover);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.rm-selected .rm-pill {
+  stroke-width: 2.5;
+}
+
+.rm-match .rm-label,
+.rm-match .rm-agent-label {
+  fill: var(--accent-ink);
+  text-decoration: underline;
+}
+
+.rm-group {
+  fill: var(--ink-muted);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.rm-caret {
+  fill: var(--axis-text);
+}
+
+.rm-dot {
+  fill: var(--surface);
+  stroke-width: 1.5;
+}
+
+.rm-kind-files .rm-dot {
+  stroke: var(--series-2);
+}
+
+.rm-kind-shell .rm-dot {
+  stroke: var(--series-3);
+}
+
+.rm-kind-web .rm-dot {
+  stroke: var(--series-5);
+}
+
+.rm-kind-search .rm-dot {
+  stroke: var(--series-7);
+}
+
+.rm-kind-agents .rm-dot {
+  stroke: var(--series-4);
+}
+
+.rm-kind-tools .rm-dot {
+  stroke: var(--kind-thinking);
+}
+
+.rm-collapsed .rm-dot {
+  fill: var(--hover);
+  stroke-dasharray: 2 2;
+}
+
+.rm-failed .rm-dot {
+  fill: var(--kind-error);
+}
+
+.rm-label {
+  fill: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.rm-collapsed .rm-label {
+  fill: var(--ink-2);
+  font-style: italic;
+}
+
+.rm-detail {
+  fill: var(--ink-muted);
+  font-size: 11px;
+}
+
+.rm-detail.error-text {
+  fill: var(--critical);
+}
+
+.rm-pill {
+  fill: var(--surface-raised);
+  stroke-width: 1.5;
+}
+
+.rm-agent-label {
+  fill: var(--ink);
+  font-size: 12px;
+}
+
+.rm-panel {
+  position: sticky;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 24px);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 13px;
+}
+
+.rm-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.rm-panel-title {
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+}
+
+.rm-panel > p {
+  margin: 0;
+  padding: 8px 10px;
+}
+
+.rm-calls {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+}
+
+.rm-call {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr) minmax(0, 1fr);
+  gap: 2px 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  color: inherit;
+  text-decoration: none;
+}
+
+.rm-call:hover,
+.rm-call:focus-visible {
+  background: var(--hover);
+}
+
+.rm-call .tool-name,
+.rm-call-agent,
+.rm-call-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rm-call-label {
+  grid-column: 2 / -1;
+}
+
+:root[data-motion="on"] .rm-node {
+  transition: opacity 120ms steps(2);
+}

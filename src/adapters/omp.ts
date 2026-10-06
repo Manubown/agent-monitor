@@ -1,5 +1,6 @@
 import path from "node:path";
 import { type Adapter, arr, homeDir, jsonLines, num, obj, shellCommand, str, stringifyInput, titleFrom, toMs } from "../core/adapter";
+import { COMPACTION_TEXT } from "../core/compaction";
 import type { AgentEvent, ParsedSession, UsageRecord } from "../core/types";
 
 /**
@@ -42,6 +43,7 @@ const contentText = (content: unknown): string => {
 export function parseOmp(filePath: string, content: string): ParsedSession | null {
   let nativeId: string | undefined;
   let parentNativeId: string | undefined;
+  let agentPrompt: number | undefined;
   let cwd: string | undefined;
   let headerTitle: string | undefined;
   let topTitle: string | undefined;
@@ -77,6 +79,10 @@ export function parseOmp(filePath: string, content: string): ParsedSession | nul
         if (m) model = m.slice(m.lastIndexOf("/") + 1);
         break;
       }
+      case "compaction":
+        // The agent summarized its history; the next request starts from the summary.
+        events.push({ ts, kind: "system", text: COMPACTION_TEXT });
+        break;
       case "custom_message": {
         const text = contentText(line.content);
         if (text) events.push({ ts, kind: "system", text });
@@ -89,6 +95,8 @@ export function parseOmp(filePath: string, content: string): ParsedSession | nul
         if (role === "user" || role === "developer") {
           const text = contentText(message.content);
           const human = role === "user" && (message.attribution === undefined || message.attribution === "user");
+          // A subagent's first agent-attributed prompt is the assignment its parent sent.
+          if (text && role === "user" && !human && agentPrompt === undefined) agentPrompt = events.length;
           if (text) events.push({ ts, kind: human ? "user" : "system", text });
         } else if (role === "assistant") {
           const msgModel = str(message.model) ?? model;
@@ -153,6 +161,7 @@ export function parseOmp(filePath: string, content: string): ParsedSession | nul
     source: "omp",
     nativeId: nativeId ?? idFromPath(filePath),
     parentNativeId,
+    dispatchIndex: parentNativeId ? agentPrompt : undefined,
     title: topTitle || changedTitle || headerTitle || subagentName || titleFrom(firstUser),
     cwd,
     startedAt: startedAt ?? events[0]?.ts ?? lastTs,

@@ -1,0 +1,214 @@
+/* "Flame" on the session page (app/components/graph/FlameGraph.tsx). Tokens only. */
+
+.fg {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fg-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.fg-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.fg-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.fg-toggle > .muted {
+  margin-right: 4px;
+}
+
+.fg-toggle button {
+  font: inherit;
+  border: 0;
+  background: transparent;
+  color: var(--ink-2);
+  padding: 2px 8px;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.fg-toggle button:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.fg-toggle button[aria-pressed="true"] {
+  background: var(--surface-raised);
+  color: var(--ink);
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.fg-toggle button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.fg-toggle button:focus-visible,
+.fg-crumb:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+.fg-ramp {
+  display: inline-block;
+  width: 48px;
+  height: 8px;
+  margin-right: 6px;
+  vertical-align: baseline;
+}
+
+.fg-unpriced {
+  background: repeating-linear-gradient(45deg, var(--baseline) 0 1px, var(--surface) 1px 3px);
+  box-shadow: inset 0 0 0 1px var(--baseline);
+}
+
+.fg-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.fg-crumbs > * + *::before {
+  content: "/";
+  margin-right: 4px;
+  color: var(--ink-muted);
+}
+
+.fg-crumb {
+  font: inherit;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent-ink);
+  cursor: pointer;
+}
+
+.fg-crumb:hover {
+  text-decoration: underline;
+}
+
+.fg-crumb-on {
+  font-weight: 600;
+}
+
+.fg-crumbs .fg-open {
+  margin-left: auto;
+}
+
+.fg-crumbs .fg-open::before {
+  content: none;
+}
+
+.fg-plot {
+  position: relative;
+}
+
+.fg-plot svg {
+  display: block;
+  overflow: visible;
+}
+
+.fg-grid {
+  stroke: var(--grid);
+  stroke-width: 1;
+}
+
+.fg-hatch {
+  stroke: var(--grid);
+  stroke-width: 2;
+}
+
+.fg-hatch-bg {
+  fill: var(--surface);
+}
+
+.fg-agent,
+.fg-block {
+  cursor: pointer;
+  outline: none;
+}
+
+.fg-root {
+  cursor: default;
+}
+
+.fg-bar {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.fg-label {
+  fill: var(--ink);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.fg-failed rect {
+  stroke: var(--kind-error);
+  stroke-width: 1;
+}
+
+.fg-agent:hover .fg-bar,
+.fg-block:hover rect {
+  stroke: var(--ink);
+  stroke-width: 1;
+}
+
+.fg-agent:focus-visible .fg-bar,
+.fg-block:focus-visible rect {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.fg-empty {
+  position: absolute;
+  top: 28px;
+  left: 0;
+  margin: 0;
+}
+
+.fg-note {
+  margin: 0;
+  font-size: 12px;
+}
+
+.fg-tip {
+  max-width: 300px;
+}
+
+.fg-tip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+}
+
+/* Zooming in or out snaps the new view in a few pixel steps, only while Motion is on. */
+@keyframes fg-in {
+  from {
+    opacity: 0.2;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+:root[data-motion="on"] .fg-view {
+  animation: fg-in 180ms steps(3);
+}

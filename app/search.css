@@ -754,12 +754,6 @@
 
 /* ---------- deep-link targets on the session timeline ---------- */
 
-/* Shown even when the timeline filter hides its kind: beats `.timeline[data-hide~=…] .ev[data-kind=…]`. */
-.timeline[data-hide] .ev[data-kind]:target,
-.timeline[data-hide] .ev[data-kind][data-search-target] {
-  display: grid;
-}
-
 .timeline .ev:target,
 .timeline .ev[data-search-target] {
   scroll-margin: 96px 0;

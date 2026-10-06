@@ -1,0 +1,235 @@
+/* Projects list and project file map (app/projects, app/components/projects). Tokens only. */
+
+.pm-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.pm-sources {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.pm-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin-bottom: 10px;
+}
+
+.pm-crumbs {
+  flex: 1 1 240px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pm-crumbs [aria-current] {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.pm-legend {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.pm-ramp {
+  display: inline-flex;
+}
+
+.pm-ramp span {
+  width: 14px;
+  height: 10px;
+}
+
+.pm-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+}
+
+.pm-layout.pm-with-panel {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 380px);
+}
+
+/* Boxes are positioned in percent of a fixed-height frame; the layout's y units are pixels of the 560 px height. */
+.pm-treemap {
+  position: relative;
+  height: 560px;
+  background: var(--hover);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  overflow: hidden;
+}
+
+.pm-box {
+  position: absolute;
+  box-sizing: border-box;
+  display: block;
+  overflow: hidden;
+  border-radius: 0;
+  color: var(--ink);
+  text-decoration: none;
+  /* 1 px gutter in the page colour between neighbours: the pixel grid. */
+  box-shadow: inset 0 0 0 1px var(--surface);
+}
+
+.pm-open {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.pm-box:hover,
+.pm-box:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+  z-index: 1;
+}
+
+.pm-open:hover,
+.pm-open:focus-visible {
+  outline-color: var(--ink-2);
+  z-index: 0;
+}
+
+.pm-selected {
+  outline: 3px solid var(--ink);
+  outline-offset: -3px;
+  z-index: 2;
+}
+
+.pm-label {
+  display: inline-flex;
+  gap: 6px;
+  max-width: calc(100% - 4px);
+  margin: 2px;
+  padding: 0 4px;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 14px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.pm-open > .pm-label {
+  margin: 1px 2px;
+  background: none;
+  font-weight: 600;
+}
+
+.pm-count {
+  color: var(--ink-muted);
+  font-weight: 400;
+}
+
+/* File panel */
+
+.pm-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  max-height: 560px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+}
+
+.pm-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pm-panel-head h3 {
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.pm-panel p,
+.pm-panel h4 {
+  margin: 0;
+}
+
+.pm-panel h4 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+}
+
+.pm-panel table {
+  font-size: 12px;
+}
+
+.pm-calls {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--border);
+}
+
+.pm-calls a {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 4px;
+  border-bottom: 1px solid var(--border);
+  color: inherit;
+  text-decoration: none;
+  font-size: 12px;
+}
+
+.pm-calls a:hover,
+.pm-calls a:focus-visible {
+  background: var(--hover);
+}
+
+.pm-kind {
+  color: var(--ink-muted);
+}
+
+.pm-kind-change {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.pm-call-agent,
+.pm-calls .tool-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pm-hot tr[aria-current="true"] {
+  background: var(--hover);
+}
+
+@media (max-width: 860px) {
+  .pm-treemap {
+    height: 420px;
+  }
+
+  .pm-layout.pm-with-panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

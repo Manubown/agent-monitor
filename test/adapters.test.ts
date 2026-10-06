@@ -43,7 +43,8 @@ describe("omp adapter", () => {
 
   it("links subagent runs to their parent and names them after the task file", () => {
     const sub = parseOmp(...fixture("omp/-proj/2026-10-01T09-00-00-000Z_aaa111/Research.jsonl"))!;
-    expect(sub).toMatchObject({ nativeId: "bbb222", parentNativeId: "aaa111", title: "Research" });
+    expect(sub).toMatchObject({ nativeId: "bbb222", parentNativeId: "aaa111", title: "Research", dispatchIndex: 0 });
+    expect(sub.events[0].text).toBe("research the auth library");
     // A prompt written by the parent agent is not a human prompt.
     expect(kinds(sub)).toEqual(["system", "assistant"]);
     expect(sub.usage[0].model).toBe("claude-sonnet-5-5");
@@ -87,7 +88,7 @@ describe("claude-code adapter", () => {
 
   it("identifies subagent transcripts by path", () => {
     const sub = parseClaudeCode(...fixture("claude-code/-proj/sess-1/subagents/agent-xyz.jsonl"))!;
-    expect(sub).toMatchObject({ nativeId: "sess-1/agent-xyz", parentNativeId: "sess-1", title: "Find the theme file" });
+    expect(sub).toMatchObject({ nativeId: "sess-1/agent-xyz", parentNativeId: "sess-1", title: "Find the theme file", dispatchIndex: 0 });
     expect(kinds(sub)).toEqual(["system", "assistant"]);
     expect(sub.usage[0].model).toBe("claude-haiku-4-5-20251001");
   });

@@ -26,7 +26,7 @@ export interface TokenTotals {
 }
 
 /** WHERE clause over the `sessions` alias `s`; `tsColumn` is the time column to bound (null: leave time to the caller). */
-function where(f: Filters, tsColumn: string | null): { sql: string; params: SQLInputValue[] } {
+export function where(f: Filters, tsColumn: string | null): { sql: string; params: SQLInputValue[] } {
   const clauses: string[] = [];
   const params: SQLInputValue[] = [];
   if (tsColumn && f.from !== undefined) {
@@ -245,6 +245,8 @@ export interface SessionRow {
   source: string;
   nativeId: string;
   parentId: string | null;
+  /** Subagents: seq of the event holding the prompt the spawning agent sent (see `dispatchPrompts`). */
+  dispatchSeq: number | null;
   filePath: string;
   title: string | null;
   cwd: string | null;
@@ -273,7 +275,7 @@ export interface SessionRow {
 }
 
 const SESSION_COLUMNS = `
-  s.id, s.source, s.native_id AS nativeId, s.parent_id AS parentId, s.file_path AS filePath, s.title, s.cwd,
+  s.id, s.source, s.native_id AS nativeId, s.parent_id AS parentId, s.dispatch_seq AS dispatchSeq, s.file_path AS filePath, s.title, s.cwd,
   s.git_branch AS gitBranch, s.agent_version AS agentVersion, s.models, s.started_at AS startedAt, s.ended_at AS endedAt,
   s.event_count AS eventCount, s.user_messages AS userMessages, s.tool_calls AS toolCalls, s.tool_errors AS toolErrors,
   s.errors, s.requests, s.input_tokens AS input, s.output_tokens AS output, s.cache_read_tokens AS cacheRead,
@@ -469,8 +471,8 @@ export interface SessionDetail {
   /** Top-level ancestor (the session itself when it has no parent): what a resume command reopens. */
   root: { id: string; source: string; nativeId: string; cwd: string | null; filePath: string };
   children: SessionRow[];
-  /** Events per kind over the whole session (the timeline itself is paged, see `sessionEvents`). */
-  kindCounts: Record<string, number>;
+  /** Events per timeline chip over the whole session (the timeline itself is paged, see `timelinePage`). */
+  timelineCounts: Record<TimelineKind, number>;
   usage: UsageRow[];
   tools: ToolRow[];
 }
@@ -501,17 +503,19 @@ export function getSession(db: Db, id: string): SessionDetail | null {
   const children = (
     db.prepare(`SELECT ${SESSION_COLUMNS} FROM sessions s WHERE s.parent_id = ? ORDER BY s.started_at`).all(id) as Record<string, unknown>[]
   ).map(toSession);
-  const kindCounts: Record<string, number> = {};
-  for (const r of db.prepare("SELECT kind, COUNT(*) AS n FROM events WHERE session_id = ? GROUP BY kind").all(id) as { kind: string; n: number }[]) {
-    kindCounts[r.kind] = r.n;
-  }
+  const timelineCounts = db
+    .prepare(
+      `SELECT ${TIMELINE_KINDS.map((k) => `COALESCE(SUM(${k === "tools" ? "kind = 'tool_call'" : KIND_MATCH[k]}), 0) AS ${k}`).join(", ")}
+       FROM events WHERE session_id = ?`,
+    )
+    .get(id) as Record<TimelineKind, number>;
   const usage = db
     .prepare(
       `SELECT seq, ts, model, input, output, cache_read AS cacheRead, cache_write AS cacheWrite, reasoning, cost_usd AS cost, cost_source AS costSource
        FROM usage WHERE session_id = ? ORDER BY seq`,
     )
     .all(id) as unknown as UsageRow[];
-  return { session, parent, root, children, kindCounts, usage, tools: byTool(db, {}, id) };
+  return { session, parent, root, children, timelineCounts: { ...timelineCounts }, usage, tools: byTool(db, {}, id) };
 }
 
 /** Events per timeline page: long sessions have thousands, and the page re-renders on every live update. */
@@ -543,11 +547,64 @@ export function timelineWindow(total: number, p: { from?: number; to?: number; a
   return { from, to, total, tail: p.to === undefined };
 }
 
+/** Event types the timeline filter toggles; `tools` is a call and its result, `error` also covers failed tool results. */
+export const TIMELINE_KINDS = ["user", "assistant", "thinking", "tools", "system", "error"] as const;
+export type TimelineKind = (typeof TIMELINE_KINDS)[number];
+
+/** Shown while the URL names none: thinking and system notes are noise to most readers. */
+export const DEFAULT_TIMELINE_KINDS: readonly TimelineKind[] = ["user", "assistant", "tools", "error"];
+
+const KIND_MATCH: Record<TimelineKind, string> = {
+  user: "kind = 'user'",
+  assistant: "kind = 'assistant'",
+  thinking: "kind = 'thinking'",
+  tools: "kind IN ('tool_call', 'tool_result')",
+  system: "kind = 'system'",
+  error: "(kind = 'error' OR (kind = 'tool_result' AND is_error = 1))",
+};
+
+/** The `kinds` query parameter (comma-separated); absent means the defaults, empty means none. */
+export function parseTimelineKinds(v: string | string[] | undefined): TimelineKind[] {
+  if (v === undefined) return [...DEFAULT_TIMELINE_KINDS];
+  const named = new Set((Array.isArray(v) ? v.join(",") : v).split(","));
+  return TIMELINE_KINDS.filter((k) => named.has(k));
+}
+
+export interface TimelinePage extends TimelineWindow {
+  /** The page's events in order; `from`/`to`/`total` count matching events, not sequence numbers. */
+  events: EventRow[];
+}
+
+/**
+ * One page of the events matching `kinds`. Paging runs over the matching
+ * events only, so a filter never leaves a page empty while matches exist
+ * elsewhere. `at` (a sequence number, from a search hit or a graph) centers the
+ * page on that event and keeps it listed even when its type is filtered out.
+ */
+export function timelinePage(db: Db, id: string, p: { kinds: readonly TimelineKind[]; from?: number; to?: number; at?: number }): TimelinePage {
+  const kinds = p.kinds.map((k) => KIND_MATCH[k]).join(" OR ") || "0";
+  const at = p.at ?? -1;
+  const match = `session_id = ? AND (${kinds} OR seq = ?)`;
+  // The hit always matches when it exists; `before` is its position among the matching events.
+  const counts = db
+    .prepare(`SELECT COUNT(*) AS total, SUM(seq < ?) AS before, MAX(seq = ?) AS found FROM events WHERE ${match}`)
+    .get(at, at, id, at) as { total: number; before: number | null; found: number | null };
+  // A stale hit (no such event) falls back to the newest page; an explicit range (paging around the hit) wins over centering.
+  const centered = p.at !== undefined && counts.found && p.from === undefined && p.to === undefined;
+  const win = timelineWindow(counts.total, { from: p.from, to: p.to, at: centered ? (counts.before ?? 0) : undefined });
+  const events = db
+    .prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE ${match} ORDER BY seq LIMIT ? OFFSET ?`)
+    .all(id, at, win.to - win.from, win.from) as unknown as EventRow[];
+  return { ...win, events };
+}
+
+const EVENT_COLUMNS = "seq, ts, kind, text, tool_name AS toolName, tool_call_id AS toolCallId, tool_input AS toolInput, is_error AS isError, model";
+
 /** Events with seq in [from, to), in order; omit `to` for "to the end". */
 export function sessionEvents(db: Db, id: string, from = 0, to?: number): EventRow[] {
   return db
     .prepare(
-      `SELECT seq, ts, kind, text, tool_name AS toolName, tool_call_id AS toolCallId, tool_input AS toolInput, is_error AS isError, model
+      `SELECT ${EVENT_COLUMNS}
        FROM events WHERE session_id = ? AND seq >= ? AND (? IS NULL OR seq < ?) ORDER BY seq`,
     )
     .all(id, from, to ?? null, to ?? null) as unknown as EventRow[];

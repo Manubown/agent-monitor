@@ -5,7 +5,7 @@ import { adapters as defaultAdapters } from "../adapters";
 import type { Adapter, Env } from "../core/adapter";
 import { deriveAutoTags } from "../core/autotags";
 import { type CostSource, costOf, loadPrices, type ModelPrice } from "../core/pricing";
-import type { AgentEvent, ParsedSession } from "../core/types";
+import type { AgentEvent, ParsedSession, TokenUsage, UsageRecord } from "../core/types";
 import type { IndexDoc, SearchIndex } from "../search/native";
 import { bumpGeneration, type Db, defaultArchiveDir, generation, transaction } from "../store/db";
 import { listArchive, readArchive, writeArchive } from "./archive";
@@ -78,6 +78,77 @@ const sessionCostSource = (sources: CostSource[]): string => {
   return "mixed";
 };
 
+interface UsageLine extends TokenUsage {
+  model: string;
+  usd: number | null;
+  source: CostSource;
+}
+
+/** A session's usage totals; models are ordered heaviest (most output) first. */
+function summarizeUsage(rows: UsageLine[]) {
+  const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
+  const outputByModel = new Map<string, number>();
+  let cost: number | null = null;
+  for (const r of rows) {
+    if (r.usd !== null) cost = (cost ?? 0) + r.usd;
+    for (const key of Object.keys(totals) as (keyof typeof totals)[]) totals[key] += r[key];
+    outputByModel.set(r.model, (outputByModel.get(r.model) ?? 0) + r.output + 1);
+  }
+  const models = [...outputByModel.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m);
+  return { totals, cost, costSource: sessionCostSource(rows.map((r) => r.source)), models };
+}
+
+/** Recompute a session's stored usage totals from its usage rows. */
+function recomputeUsage(db: Db, id: string): void {
+  const rows = db
+    .prepare(
+      `SELECT model, input, output, cache_read AS cacheRead, cache_write AS cacheWrite, reasoning, cost_usd AS usd, cost_source AS source
+       FROM usage WHERE session_id = ?`,
+    )
+    .all(id) as unknown as UsageLine[];
+  const { totals, cost, costSource, models } = summarizeUsage(rows);
+  db.prepare(
+    `UPDATE sessions SET models = ?, requests = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
+       cache_write_tokens = ?, reasoning_tokens = ?, cost_usd = ?, cost_source = ?
+     WHERE id = ?`,
+  ).run(JSON.stringify(models), rows.length, totals.input, totals.output, totals.cacheRead, totals.cacheWrite, totals.reasoning, cost, costSource, id);
+}
+
+type Rank = [ts: number, startedAt: number, sessionId: string];
+const ranksBefore = (a: Rank, b: Rank): boolean => (a[0] !== b[0] ? a[0] < b[0] : a[1] !== b[1] ? a[1] < b[1] : a[2] < b[2]);
+
+/**
+ * Forks and resumes copy earlier requests into a new log file, so one request id
+ * can turn up in several sessions. It is counted once, in the session that made
+ * it: earliest request, then earliest session start, then lowest id. Returns the
+ * records this session keeps; copies it outranks are removed from the other
+ * sessions, whose totals are recomputed. Sessions stored from the same file are
+ * about to be replaced and do not compete.
+ */
+function keepOwnRequests(db: Db, filePath: string, id: string, s: ParsedSession): UsageRecord[] {
+  const findCopies = db.prepare(
+    `SELECT u.session_id AS sessionId, u.seq, u.ts, s.started_at AS startedAt
+     FROM usage u JOIN sessions s ON s.id = u.session_id
+     WHERE u.request_id = ? AND u.session_id <> ? AND s.file_path <> ?`,
+  );
+  const removeCopy = db.prepare("DELETE FROM usage WHERE session_id = ? AND seq = ?");
+  const startedAt = Math.round(s.startedAt);
+  const losers = new Set<string>();
+  const kept = s.usage.filter((record) => {
+    if (!record.requestId) return true;
+    const copies = findCopies.all(record.requestId, id, filePath) as unknown as { sessionId: string; seq: number; ts: number; startedAt: number }[];
+    const mine: Rank = [Math.round(record.ts), startedAt, id];
+    if (copies.some((c) => ranksBefore([c.ts, c.startedAt, c.sessionId], mine))) return false;
+    for (const c of copies) {
+      removeCopy.run(c.sessionId, c.seq);
+      losers.add(c.sessionId);
+    }
+    return true;
+  });
+  for (const loser of losers) recomputeUsage(db, loser);
+  return kept;
+}
+
 /**
  * Chained hash per event: hashes[i] covers events[0..i]. A stored session whose
  * hash equals hashes[storedCount - 1] of a fresh parse only gained events at
@@ -143,19 +214,9 @@ export function writeSession(db: Db, filePath: string, s: ParsedSession | null, 
   }
   const id = `${s.source}:${s.nativeId}`;
 
-  const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
-  const outputByModel = new Map<string, number>();
-  const costSources: CostSource[] = [];
-  let cost: number | null = null;
-  const usageRows = s.usage.map((record) => {
-    const c = costOf(record, prices);
-    costSources.push(c.source);
-    if (c.usd !== null) cost = (cost ?? 0) + c.usd;
-    for (const key of Object.keys(totals) as (keyof typeof totals)[]) totals[key] += record.usage[key];
-    outputByModel.set(record.model, (outputByModel.get(record.model) ?? 0) + record.usage.output + 1);
-    return { record, c };
-  });
-  const models = [...outputByModel.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m);
+  const kept = keepOwnRequests(db, filePath, id, s);
+  const usageRows = kept.map((record) => ({ record, c: costOf(record, prices) }));
+  const { totals, cost, costSource, models } = summarizeUsage(usageRows.map(({ record, c }) => ({ ...record.usage, model: record.model, usd: c.usd, source: c.source })));
   const count = (pred: (e: AgentEvent) => boolean) => s.events.filter(pred).length;
   const hashes = chainHashes(s.events);
 
@@ -177,12 +238,13 @@ export function writeSession(db: Db, filePath: string, s: ParsedSession | null, 
     gitBranch: s.gitBranch ?? null,
   };
   db.prepare(
-    `INSERT INTO sessions (id, source, native_id, parent_id, file_path, title, cwd, git_branch, agent_version, models,
+    `INSERT INTO sessions (id, source, native_id, parent_id, dispatch_seq, file_path, title, cwd, git_branch, agent_version, models,
        started_at, ended_at, event_count, user_messages, tool_calls, tool_errors, errors, requests,
        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, cost_usd, cost_source, events_hash)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
-       source = excluded.source, native_id = excluded.native_id, parent_id = excluded.parent_id, file_path = excluded.file_path,
+       source = excluded.source, native_id = excluded.native_id, parent_id = excluded.parent_id, dispatch_seq = excluded.dispatch_seq,
+       file_path = excluded.file_path,
        title = excluded.title, cwd = excluded.cwd, git_branch = excluded.git_branch, agent_version = excluded.agent_version,
        models = excluded.models, started_at = excluded.started_at, ended_at = excluded.ended_at, event_count = excluded.event_count,
        user_messages = excluded.user_messages, tool_calls = excluded.tool_calls, tool_errors = excluded.tool_errors,
@@ -195,6 +257,7 @@ export function writeSession(db: Db, filePath: string, s: ParsedSession | null, 
     s.source,
     s.nativeId,
     s.parentNativeId ? `${s.source}:${s.parentNativeId}` : null,
+    s.dispatchIndex ?? null,
     filePath,
     row.title,
     row.cwd,
@@ -208,14 +271,14 @@ export function writeSession(db: Db, filePath: string, s: ParsedSession | null, 
     count((e) => e.kind === "tool_call"),
     count((e) => e.kind === "tool_result" && e.isError === true),
     count((e) => e.kind === "error"),
-    s.usage.length,
+    usageRows.length,
     totals.input,
     totals.output,
     totals.cacheRead,
     totals.cacheWrite,
     totals.reasoning,
     cost,
-    sessionCostSource(costSources),
+    costSource,
     hashes.at(-1) ?? "",
   );
 
@@ -240,12 +303,12 @@ export function writeSession(db: Db, filePath: string, s: ParsedSession | null, 
   });
 
   const insertUsage = db.prepare(
-    `INSERT INTO usage (session_id, seq, ts, model, input, output, cache_read, cache_write, reasoning, cost_usd, cost_source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO usage (session_id, seq, ts, model, input, output, cache_read, cache_write, reasoning, cost_usd, cost_source, request_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   usageRows.forEach(({ record, c }, seq) => {
     const u = record.usage;
-    insertUsage.run(id, seq, Math.round(record.ts), record.model, u.input, u.output, u.cacheRead, u.cacheWrite, u.reasoning, c.usd, c.source);
+    insertUsage.run(id, seq, Math.round(record.ts), record.model, u.input, u.output, u.cacheRead, u.cacheWrite, u.reasoning, c.usd, c.source, record.requestId ?? null);
   });
 
   // Derived from every event, so recomputed on the append path too.
