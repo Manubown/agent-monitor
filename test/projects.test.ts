@@ -247,6 +247,19 @@ describe("project store", () => {
     expect(codexOnly.files[0]).toMatchObject({ writes: 1, reads: 0 });
   });
 
+  it("cuts touches at the exclusive upper bound of a window", () => {
+    // The claude-code write lands two days later; a window that ends before it must not count it anywhere.
+    const window = { from: T - MIN, to: T + 86400_000 };
+    const map = projectMap(db, "/work/proj", window, HOME);
+    expect(map.files.map((f) => f.path).sort()).toEqual(["src/a.ts", "src/new.ts", "src/old.ts", "~/notes.md"]);
+    expect(map.files.find((f) => f.path === "src/a.ts")).toMatchObject({ writes: 0, reads: 2, edits: 1 });
+    expect(projectFile(db, "/work/proj", window, "src/a.ts", HOME)!.calls.map((c) => c.sessionId)).toEqual(["omp:sub", "omp:root", "omp:root"]);
+    expect(projectGource(db, "/work/proj", window).every((t) => t.ts < window.to)).toBe(true);
+    // The project list counts the same window: only the sessions that worked in it.
+    const listed = listProjects(db, window, HOME).find((p) => p.cwd === "/work/proj")!;
+    expect(listed.agents).toBe(2);
+  });
+
   it("lists every call of one file, newest first, with per-agent counts", () => {
     const d = projectFile(db, "/work/proj", {}, "src/a.ts", HOME)!;
     expect(d.abs).toBe("/work/proj/src/a.ts");

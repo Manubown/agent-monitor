@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { parseCodex } from "../src/adapters/codex";
-import { parseOmp } from "../src/adapters/omp";
+import { codexAdapter } from "../src/adapters/codex";
+import { ompAdapter } from "../src/adapters/omp";
+import { parseLog } from "../src/core/adapter";
 import { IDLE_GAP_MS } from "../src/core/autotags";
 import {
   COMPACTION_TEXT,
@@ -221,7 +222,7 @@ describe("compaction markers", () => {
     ]
       .map((l) => JSON.stringify(l))
       .join("\n");
-    expect(parseOmp("/x/2026_s1.jsonl", log)?.events).toEqual([{ ts: Date.parse("2026-10-01T12:05:00Z"), kind: "system", text: COMPACTION_TEXT }]);
+    expect(parseLog(ompAdapter, "/x/2026_s1.jsonl", log)?.events).toEqual([{ ts: Date.parse("2026-10-01T12:05:00Z"), kind: "system", text: COMPACTION_TEXT }]);
   });
 
   it("is emitted once for a Codex compaction logged as both rollout item and event", () => {
@@ -232,7 +233,7 @@ describe("compaction markers", () => {
     ]
       .map((l) => JSON.stringify(l))
       .join("\n");
-    const events = parseCodex("/x/rollout-c1.jsonl", log)?.events ?? [];
+    const events = parseLog(codexAdapter, "/x/rollout-c1.jsonl", log)?.events ?? [];
     expect(events.filter((e) => isCompactionMarker(e.kind, e.text))).toHaveLength(1);
   });
 });
@@ -257,8 +258,47 @@ describe("sessionContext", () => {
       ["claude-code:root", 0, 2],
       ["claude-code:sub", 1, 2],
     ]);
-    expect(agents[0].requests[0]).toEqual({ ts: T, model: "m", input: 10, cacheRead: 150_000, cacheWrite: 5_000, output: 0, cost: 0.1, costSource: "reported" });
+    expect(agents[0].requests[0]).toEqual({
+      ts: T,
+      // No event precedes this request, so it falls back to the session's first one (the compaction marker).
+      seq: 0,
+      prompt: null,
+      model: "m",
+      input: 10,
+      cacheRead: 150_000,
+      cacheWrite: 5_000,
+      output: 0,
+      cost: 0.1,
+      costSource: "reported",
+    });
     expect(agents[0].compactions).toEqual([{ index: 1, ts: T + 2 * MIN, inferred: false, before: 155_010, after: 20_010, drop: 135_000 }]);
     expect(agents[1].compactions).toMatchObject([{ index: 1, inferred: true, drop: 90_000 }]);
+  });
+
+  it("points each request at the event it followed and the prompt that was running", () => {
+    insertSession(db, "claude-code:root");
+    insertSession(db, "claude-code:sub", { parentId: "claude-code:root", startedAt: T + 3 * MIN });
+    insertEvents(db, "claude-code:root", [
+      { ts: T, kind: "user", text: "  first   prompt " },
+      { ts: T + MIN, kind: "assistant", text: "working" },
+      { ts: T + 4 * MIN, kind: "user", text: "second prompt" },
+    ]);
+    insertEvents(db, "claude-code:sub", [{ ts: T + 3 * MIN, kind: "user", text: "do the subtask" }]);
+    insertUsage(db, "claude-code:root", [
+      // Before any event of the session: links to its first event rather than nowhere.
+      { ts: T - MIN },
+      { ts: T + 2 * MIN },
+      { ts: T + 5 * MIN },
+    ]);
+    insertUsage(db, "claude-code:sub", [{ ts: T + 3 * MIN }]);
+
+    const agents = sessionContext(db, "claude-code:root");
+    expect(agents[0].requests.map((r) => [r.seq, r.prompt])).toEqual([
+      [0, null],
+      [1, "first prompt"],
+      [2, "second prompt"],
+    ]);
+    // A subagent links into its own timeline, with its dispatch prompt.
+    expect(agents[1].requests.map((r) => [r.seq, r.prompt])).toEqual([[0, "do the subtask"]]);
   });
 });

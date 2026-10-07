@@ -4,9 +4,9 @@ import { totalTokens } from "../../src/core/types";
 import { filterOptions, isActive, isSessionSort, listSessions, type SessionSort } from "../../src/store/queries";
 import { FilterBar } from "../components/FilterBar";
 import { Cost, Empty, ExportLinks, SourceBadge, TagList } from "../components/ui";
-import { dateTime, duration, integer, project, tokens } from "../lib/format";
+import { dateTime, dayRangeLabel, duration, integer, project, tokens } from "../lib/format";
 import { positiveInt } from "../lib/params";
-import { filtersFrom, RANGES, ready, type SearchParams } from "../lib/server";
+import { filtersFrom, queryOf, RANGES, ready, type SearchParams } from "../lib/server";
 
 const PAGE_SIZE = 50;
 
@@ -33,7 +33,7 @@ export default async function SessionsPage({ searchParams }: { searchParams: Pro
   if (page !== requested) ({ rows, total } = listSessions(db, f, { limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }, sort));
   const options = filterOptions(db);
   const now = Date.now();
-  const current = { range: f.range, source: f.source, project: f.cwd, q: f.q, tag: f.tag, sort: sort === "recent" ? undefined : sort };
+  const current = { ...queryOf(f), sort: sort === "recent" ? undefined : sort };
   const href = (changes: Record<string, string | undefined>) => {
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries({ ...current, ...changes })) if (v) qs.set(k, v);
@@ -62,7 +62,8 @@ export default async function SessionsPage({ searchParams }: { searchParams: Pro
           <ExportLinks view="sessions" filters={current} />
         </div>
         <span className="muted">
-          {integer(total)} sessions active in range, {SORT_LABEL[sort]}. Totals include the work of their subagents.
+          {integer(total)} sessions active {f.days ? dayRangeLabel(f.days.from, f.days.to) : "in range"}, {SORT_LABEL[sort]}. Totals include the work of their
+          subagents.
         </span>
       </div>
       <FilterBar

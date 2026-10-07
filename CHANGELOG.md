@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- **Customizable overview**: the overview is a dashboard of widgets (recent sessions, summary tiles, cost and tokens per day, activity heatmap, token mix, tools, models, projects). "Customize" moves a card earlier or later, sets its width (3, 4, 6, 8 or 12 of 12 columns) and height preset, hides it, adds it back, or resets the layout. Every control is a keyboard-accessible button. The layout lives in `user.db`, so it survives database rebuilds; cards collapse to full width on narrow screens, and a hidden card runs no queries.
+- **Sessions first**: the most recent sessions appear as a row of cards right under the filter bar (tool, project, last activity, cost, tags, subagents, a pulse while running), one to five depending on the window width. They replace the "Recent sessions" table at the bottom.
+- **What happened on a day**: clicking a day in "Cost per day" or "Tokens per day" opens a panel with that day's sessions, their prompts, tools, changed files, tokens and cost, and a link to all of them. The errors chart drills into a day's errors and the usage windows into their sessions; on a session page, each bar of "Context per request" jumps to its event and shows the prompt that was running.
+- **Custom date window**: `from`/`to` days in the URL (set by those drill-downs) override the range on every page, link and export; the filter bar shows the window with a button to clear it.
+
 ### Fixed
 
 - **Windows paths in the analysis views**: file paths written as `C:\…`, `c:\…` or relative `src\a.ts` were treated as relative POSIX paths. The file tree, project map, file heat, resource map, turns and loop reasons now show them relative to the project (or under `~/`), and the different spellings of one file count as one file.
@@ -14,9 +21,15 @@ All notable changes to this project are documented here. The format follows [Kee
 - **Crashes on bad URLs**: `#e-%` in the address, `?view=constructor` on the export, fractional or huge page numbers and timeline positions now fall back instead of failing; download names are slugged. A root-layout failure shows a page with a retry button.
 - **Archive**: an unreadable copy is recorded and skipped until it changes instead of being re-read every 5 s; a damaged copy reads back every part that still decodes; when two archived copies hold one session the fuller one wins; an archived log whose import failed because the database was busy is retried. When a tool shrinks or rewrites a log, the copy it replaces is kept next to it (`.prev`) instead of being overwritten.
 - **Legacy Codex rollouts** (without the `payload` envelope) are read; a log with no recognizable line is reported as failed instead of silently storing nothing.
+- **Resume command on Windows**: the session page now shows PowerShell syntax (`Set-Location -LiteralPath '…' -ErrorAction Stop; claude --resume …`) when the dashboard runs on Windows; `cd '<C:\…>' && …` failed in cmd.exe and Windows PowerShell 5.1. Other systems are unchanged.
+- **`pnpm build:native` while the server runs**: it now says to stop the server that has the search addon loaded, instead of reporting a failed download and crashing in the cargo fallback.
+- **Charts and the keyboard**: a chart is one tab stop; arrow keys, Home and End move between days (announced to screen readers), Enter opens the day. Axis labels meet 4.5:1 contrast on the light theme.
 
 ### Changed
 
+- **Sync reads only what an agent appended**: a log that only grew is read from where the last sync stopped; just the new bytes are parsed, hashed, auto-tagged, archived and stored. One sync after an appended turn of a 14 MiB session went from about 550–690 ms to 11–15 ms. A rewritten or shrunk log, `--full` and writes by another process still read the whole file.
+- **Adapter contract**: adapters are incremental parsers (`Adapter.parser(path)` with `push(line)` and `result()`) instead of `parse(path, content)`; `parseLog` derives the whole-file parse. An event `result()` returned never changes.
+- Stopping `pnpm demo` on Windows ends the whole `next dev` process tree.
 - **Faster always-on syncing**: the archive appends only the new part of a grown log, the archive is listed once per server start, new indexes cover the overview, timeline, heatmap, tools and project filters, and the project file map re-parses only sessions that changed.
 - **Live updates**: only pages affected by a sync refresh (a session page for its own tree, a project map for its project), Back and Forward catch up on changes made meanwhile, "synced N ago" keeps counting on every page, and hidden tabs close their live connection.
 - `pnpm watch` keeps running after a failed sync.

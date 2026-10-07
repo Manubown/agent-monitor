@@ -1,18 +1,18 @@
 import Link from "next/link";
-import { adapters, sourceLabel } from "../src/adapters";
+import { sourceLabel } from "../src/adapters";
 import { totalTokens } from "../src/core/types";
-import { type ActiveSession, activeSessions, byModel, byProject, byTool, daily, eventTimeline, filterOptions, listSessions, overview } from "../src/store/queries";
+import { loadLayout } from "../src/store/dashboard";
+import { type ActiveSession, activeSessions, eventTimeline, filterOptions } from "../src/store/queries";
+import { linkTo, widgetContext } from "./components/dashboard/context";
+import { Dashboard, DashboardBar } from "./components/dashboard/Dashboard";
+import { WIDGET_SPECS } from "./components/dashboard/specs";
 import { FilterBar } from "./components/FilterBar";
-import { PixelBand } from "./components/pixel/PixelBand";
-import { type ChartSeries, StackedBarChart } from "./components/StackedBarChart";
 import { NoActivity } from "./components/NoActivity";
-import { Cost, ExportLinks, Meter, ProjectCell, PulseDot, SourceBadge, sourceColor, TagList, Tile } from "./components/ui";
-import { ago, dayRange, duration, integer, localDay, per, project, shortDay, tokens, usd } from "./lib/format";
-import { filtersFrom, RANGES, ready, type SearchParams } from "./lib/server";
-import { HEATMAP_WEEKS } from "../src/core/heatmap";
-import { activityHeatmap } from "../src/store/insights";
-import { ActivityHeatmap } from "./components/insights/ActivityHeatmap";
-import { projectMapHref } from "./components/projects/links";
+import { PixelBand } from "./components/pixel/PixelBand";
+import { Cost, PulseDot, SourceBadge, TagList } from "./components/ui";
+import { ago, dayRangeLabel, integer, per, project, tokens, usd } from "./lib/format";
+import { dayParam, first } from "./lib/params";
+import { filtersFrom, queryOf, RANGES, ready, type SearchParams } from "./lib/server";
 
 const EVENT_LABEL: Record<string, string> = {
   user: "Prompt",
@@ -31,64 +31,31 @@ function lastEventLabel(e: ActiveSession["lastEvent"], now: number): string {
   return `${what} · ${seconds < 60 ? `${seconds} s ago` : ago(e.ts, now)}`;
 }
 
+/**
+ * The overview is a dashboard: the band, "Active now" (live and unfiltered) and the filter bar are fixed, everything
+ * below them is the stored widget layout (`src/core/dashboard.ts`, `app/components/dashboard/`). The page itself
+ * runs only the queries those fixed parts need; each widget runs its own, so a hidden widget costs nothing.
+ */
 export default async function OverviewPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const params = await searchParams;
   const f = filtersFrom(params);
   const db = await ready();
-  const o = overview(db, f);
-  const days = daily(db, f);
-  const models = byModel(db, f);
-  const projects = byProject(db, f).slice(0, 10);
-  const tools = byTool(db, f).slice(0, 12);
-  const recent = listSessions(db, f, { limit: 6, offset: 0 }).rows;
-  const options = filterOptions(db);
   const now = Date.now();
+  // A custom window ends where it ends, not today: the skyline, the heatmap and the day axis stop there.
+  const until = f.to === undefined ? now : Math.min(f.to - 1, now);
   const active = activeSessions(db, now);
-  const timeline = eventTimeline(db, f, now);
+  const timeline = eventTimeline(db, f, until);
+  const options = filterOptions(db);
   const range = RANGES.find((r) => r.id === f.range);
-  const rangeLabel = !range || range.id === "all" ? "all time" : `last ${range.label}`;
+  const rangeLabel = f.days ? dayRangeLabel(f.days.from, f.days.to) : !range || range.id === "all" ? "all time" : `last ${range.label}`;
   const peak = Math.max(0, ...timeline.counts);
+  const customize = first(params.customize) === "1";
   // `q` has no box on this page, but a link can carry it (the data below is filtered by it), so every link keeps it.
-  const current = { range: f.range, source: f.source, project: f.cwd, q: f.q, tag: f.tag };
-  const overviewHref = (query: Record<string, string | undefined>) => {
-    const qs = new URLSearchParams();
-    for (const [k, v] of Object.entries(query)) if (v) qs.set(k, v);
-    return `/?${qs}`;
-  };
-  /** The sessions list under the same filters, optionally sorted by the tile's measure. */
-  const drill = (sort?: string) => {
-    const qs = new URLSearchParams();
-    for (const [k, v] of Object.entries({ ...current, sort })) if (v) qs.set(k, v);
-    return `/sessions?${qs}`;
-  };
-
-  // Continuous day axis so idle days show as gaps rather than disappearing.
-  const firstDay = f.from ? localDay(f.from) : days[0]?.day;
-  const dayList = firstDay ? dayRange(firstDay, localDay(Date.now())) : [];
-  const present = new Set(days.map((d) => d.source));
-  const sources = [...adapters.map((a) => a.id), ...[...present].filter((s) => !adapters.some((a) => a.id === s))].filter((s) => present.has(s));
-  const seriesFor = (value: (row: (typeof days)[number]) => number): ChartSeries[] =>
-    sources.map((source) => ({
-      key: source,
-      label: sourceLabel(source),
-      color: sourceColor(source),
-      values: dayList.map((day) => {
-        const row = days.find((d) => d.day === day && d.source === source);
-        return row ? value(row) : 0;
-      }),
-    }));
-  const fullDays = dayList.map((d) => new Date(`${d}T12:00:00`).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }));
-
-  const tokenTotal = totalTokens(o);
-  const contextTokens = o.input + o.cacheRead + o.cacheWrite;
-  const mix = [
-    { label: "Cache read", value: o.cacheRead, note: "re-sent context served from the prompt cache" },
-    { label: "Cache write", value: o.cacheWrite, note: "context written to the cache" },
-    { label: "Input (uncached)", value: o.input, note: "context billed at full input price" },
-    { label: "Output", value: o.output, note: o.reasoning ? `${tokens(o.reasoning)} of it reasoning` : "replies, tool calls, thinking" },
-  ];
-  const maxMix = Math.max(...mix.map((m) => m.value));
-  const maxTool = Math.max(1, ...tools.map((t) => t.calls));
+  const current = queryOf(f);
+  const layout = loadLayout(db, WIDGET_SPECS);
+  const ctx = widgetContext({ db, filters: f, now, until, rangeLabel, day: dayParam(params.day) ?? null, query: current, customize, layout });
+  // The band needs the totals anyway; the summary and token-mix widgets share this one read.
+  const o = ctx.overview();
 
   return (
     <>
@@ -143,7 +110,8 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
         ranges={RANGES.map((r) => ({ value: r.id, label: r.label }))}
         sources={options.sources.map((s) => ({ value: s, label: sourceLabel(s) }))}
         projects={options.projects.map((p) => ({ value: p, label: project(p) }))}
-        current={current}
+        // The customize mode is part of the page's state, so changing a filter stays in it.
+        current={{ ...current, customize: customize ? "1" : undefined }}
         // Only shown when a search is already applied, so it can be seen and cleared.
         search={Boolean(f.q)}
       />
@@ -152,234 +120,16 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
         <NoActivity
           db={db}
           subject="agent activity"
-          range={f.range}
-          filtered={Boolean(f.source || f.cwd || f.tag || f.q)}
+          range={f.days ? "custom" : f.range}
+          filtered={Boolean(f.source || f.cwd || f.tag || f.q || f.days)}
           query={f.q}
-          allTimeHref={overviewHref({ ...current, range: "all" })}
-          clearHref={overviewHref({ range: "all" })}
+          allTimeHref={linkTo("/", { ...current, range: "all", from: undefined, to: undefined })}
+          clearHref={linkTo("/", { range: "all" })}
         />
       ) : (
         <>
-          <div className="tiles">
-            <Tile
-              hero
-              label="Cost"
-              value={usd(o.cost)}
-              href={drill("cost")}
-              note={
-                <>
-                  {o.estimatedCost ? `${usd(o.estimatedCost)} estimated from list prices` : "as recorded by the tools"}
-                  {o.unpricedTokens > 0 && ` · ${tokens(o.unpricedTokens)} tokens unpriced`}
-                </>
-              }
-            />
-            <Tile label="Sessions" value={integer(o.sessions)} href={drill()} note={`+ ${integer(o.subagents)} subagent runs · ${integer(o.userMessages)} prompts`} />
-            <Tile label="Tokens" value={tokens(tokenTotal)} href={drill("tokens")} note={`${tokens(o.output)} output`} />
-            <Tile
-              label="Model requests"
-              value={integer(o.requests)}
-              href={drill("requests")}
-              note={o.requests ? `${usd((o.cost ?? 0) / o.requests)} per request` : undefined}
-            />
-            <Tile label="Tool calls" value={integer(o.toolCalls)} href={drill("tools")} note={`${integer(o.errors)} errors`} />
-            <Tile
-              label="Cache hit rate"
-              value={contextTokens ? `${Math.round((o.cacheRead / contextTokens) * 100)}%` : "—"}
-              href="#token-mix"
-              note="of context tokens read from cache"
-            />
-          </div>
-
-          <div className="grid-2">
-            <section className="card">
-              <div className="card-head">
-                <h2>Cost per day</h2>
-                <span className="muted">by tool</span>
-                <ExportLinks view="daily" filters={current} compact />
-              </div>
-              <StackedBarChart labels={fullDays} ticks={dayList.map(shortDay)} series={seriesFor((r) => r.cost ?? 0)} format="usd" ariaLabel="Cost per day by tool" />
-            </section>
-            <section className="card">
-              <div className="card-head">
-                <h2>Tokens per day</h2>
-                <span className="muted">by tool, all token types</span>
-              </div>
-              <StackedBarChart labels={fullDays} ticks={dayList.map(shortDay)} series={seriesFor((r) => totalTokens(r))} format="tokens" ariaLabel="Tokens per day by tool" />
-            </section>
-          </div>
-
-          <ActivityHeatmap
-            data={activityHeatmap(db, f, now)}
-            rangeNote={f.from === undefined ? `last ${HEATMAP_WEEKS} weeks` : rangeLabel}
-            timeZone={Intl.DateTimeFormat().resolvedOptions().timeZone}
-          />
-
-          <div className="grid-2">
-            <section className="card" id="token-mix">
-              <div className="card-head">
-                <h2>Token mix</h2>
-                <span className="muted">{tokens(tokenTotal)} total</span>
-              </div>
-              <table>
-                <tbody>
-                  {mix.map((m) => (
-                    <tr key={m.label}>
-                      <td>
-                        {m.label}
-                        <span className="cell-sub">{m.note}</span>
-                      </td>
-                      <td className="num">
-                        {tokens(m.value)}
-                        <Meter value={m.value} max={maxMix} />
-                      </td>
-                      <td className="num muted">{tokenTotal ? `${((m.value / tokenTotal) * 100).toFixed(1)}%` : "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </section>
-            <section className="card">
-              <div className="card-head">
-                <h2>Tools used</h2>
-                <span className="muted">{integer(o.toolCalls)} calls</span>
-              </div>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Tool</th>
-                      <th className="num">Calls</th>
-                      <th className="num">Failed</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {tools.map((t) => (
-                      <tr key={t.tool}>
-                        <td className="tool-name">{t.tool}</td>
-                        <td className="num">
-                          {integer(t.calls)}
-                          <Meter value={t.calls} max={maxTool} />
-                        </td>
-                        <td className={t.errors ? "num error-text" : "num muted"}>{t.errors ? `${t.errors} (${Math.round((t.errors / t.calls) * 100)}%)` : "0"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          </div>
-
-          <section className="card">
-            <div className="card-head">
-              <h2>Models</h2>
-              <ExportLinks view="models" filters={current} compact />
-            </div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Model</th>
-                    <th>Tool</th>
-                    <th className="num">Requests</th>
-                    <th className="num">Input</th>
-                    <th className="num">Cache write</th>
-                    <th className="num">Cache read</th>
-                    <th className="num">Output</th>
-                    <th className="num">Cost</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {models.map((m) => (
-                    <tr key={`${m.source}:${m.model}`}>
-                      <td className="mono">{m.model}</td>
-                      <td>
-                        <SourceBadge source={m.source} />
-                      </td>
-                      <td className="num">{integer(m.requests)}</td>
-                      <td className="num">{tokens(m.input)}</td>
-                      <td className="num">{tokens(m.cacheWrite)}</td>
-                      <td className="num">{tokens(m.cacheRead)}</td>
-                      <td className="num">{tokens(m.output)}</td>
-                      <td className="num">
-                        <Cost value={m.cost} source={m.costSource} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          <div className="grid-2">
-            <section className="card">
-              <div className="card-head">
-                <h2>Projects</h2>
-                <span className="muted">by working directory</span>
-              </div>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Project</th>
-                      <th className="num">Sessions</th>
-                      <th className="num">Tokens</th>
-                      <th className="num">Cost</th>
-                      <th className="num">Last active</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {projects.map((p) => (
-                      <tr key={p.cwd ?? ""} className="row-click">
-                        <td>
-                          <ProjectCell cwd={p.cwd} />
-                          {p.cwd && (
-                            <Link className="cell-sub" href={projectMapHref(p.cwd, { range: f.range, source: f.source })}>
-                              File map →
-                            </Link>
-                          )}
-                        </td>
-                        <td className="num">{integer(p.sessions)}</td>
-                        <td className="num">{tokens(totalTokens(p))}</td>
-                        <td className="num">{usd(p.cost)}</td>
-                        <td className="num muted">{ago(p.lastActive)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-            <section className="card">
-              <div className="card-head">
-                <h2>Recent sessions</h2>
-                <Link className="muted" href="/sessions">
-                  All sessions →
-                </Link>
-              </div>
-              <div className="table-wrap">
-                <table>
-                  <tbody>
-                    {recent.map((s) => (
-                      <tr key={s.id} className="row-click">
-                        <td>
-                          <Link className="row-link" href={`/sessions/${encodeURIComponent(s.id)}`}>
-                            {s.title || s.nativeId}
-                          </Link>
-                          <span className="cell-sub">
-                            {project(s.cwd)} · {ago(s.total.lastActive)} · {duration(s.endedAt - s.startedAt)}
-                            {s.subagents > 0 && ` · ${s.subagents} subagents`}
-                          </span>
-                        </td>
-                        <td>
-                          <SourceBadge source={s.source} />
-                        </td>
-                        <td className="num">{usd(s.total.cost)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          </div>
+          <DashboardBar ctx={ctx} layout={layout} customize={customize} />
+          <Dashboard ctx={ctx} layout={layout} customize={customize} />
         </>
       )}
     </>

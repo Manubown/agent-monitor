@@ -16,7 +16,7 @@
  *   codex/sessions/YYYY/MM/DD/rollout-<local time>-<uuid>.jsonl, subagents linked via session_meta
  * Next.js allows one `next dev` per project directory, so stop `pnpm dev` before `pnpm demo`.
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { DEFAULT_PRICES, normalizeModel } from "../src/core/pricing";
@@ -2128,10 +2128,25 @@ function main(): void {
     const next = path.join(import.meta.dirname, "next.mjs");
     const child = spawn(process.execPath, [next, "dev", "--hostname", "127.0.0.1", "--port", "4200"], { stdio: "inherit", env: { ...process.env, ...env } });
     const timer = live && g ? runLive(g) : undefined;
-    for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => child.kill(signal));
+    let stopping = false;
+    const stop = (signal: NodeJS.Signals) => {
+      stopping = true;
+      // `kill` reaches the Next CLI only; on Windows its server runs as a grandchild that would keep port 4200.
+      const tree =
+        process.platform === "win32" && child.pid !== undefined &&
+        spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" }).status === 0;
+      if (!tree) child.kill(signal);
+    };
+    for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => stop(signal));
+    child.on("error", (error) => {
+      clearInterval(timer);
+      console.error(`demo: could not start the dev server: ${error.message}`);
+      process.exit(1);
+    });
     child.on("exit", (code) => {
       clearInterval(timer);
-      process.exit(code ?? 0);
+      // A signal (or the hard kill above) leaves no code; that is a normal stop, a non-zero code is the server's.
+      process.exit(stopping ? 0 : (code ?? 0));
     });
     return;
   }

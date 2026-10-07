@@ -231,8 +231,18 @@ export function sessionTurns(db: Db, sessionId: string): Turn[] {
 
 // ---------- context per request ----------
 
+/** Characters of the prompt shown with a request in the context chart's tooltip. */
+const CONTEXT_PROMPT_MAX = 120;
+
 export interface ContextPoint {
   ts: number;
+  /**
+   * Sequence number of the agent's event closest to the request (the last one at or before it), so a request links
+   * into the timeline with `?at=<seq>#e-<seq>`. Null for an agent that has usage rows but no events.
+   */
+  seq: number | null;
+  /** The prompt the agent was working on: its last user message before the request, clipped. Null before the first. */
+  prompt: string | null;
   model: string;
   input: number;
   cacheRead: number;
@@ -251,6 +261,38 @@ export interface ContextAgent {
   compactions: Compaction[];
 }
 
+interface ContextUsageRow extends Omit<ContextPoint, "seq" | "prompt"> {
+  sessionId: string;
+}
+
+/** An agent's events in time order; `prompt` is set on its user messages only. */
+interface ContextEventRow {
+  sessionId: string;
+  seq: number;
+  ts: number;
+  prompt: string | null;
+}
+
+/**
+ * Walks an agent's requests and its events together (both in time order) and marks each request with the event it
+ * followed and the prompt that was running. A request before the first event keeps that event's seq, so its link
+ * still lands at the top of the timeline.
+ */
+function attachEvents(requests: ContextPoint[], events: ContextEventRow[]): void {
+  let i = 0;
+  let seq: number | null = null;
+  let prompt: string | null = null;
+  for (const r of requests) {
+    while (i < events.length && events[i].ts <= r.ts) {
+      seq = events[i].seq;
+      if (events[i].prompt !== null) prompt = clip(events[i].prompt ?? "", CONTEXT_PROMPT_MAX);
+      i++;
+    }
+    r.seq = seq ?? events[0]?.seq ?? null;
+    r.prompt = prompt;
+  }
+}
+
 /** Model requests and compaction boundaries of every agent in the tree with at least one request, the session first. */
 export function sessionContext(db: Db, sessionId: string): ContextAgent[] {
   const agents = treeAgents(db, sessionId);
@@ -262,12 +304,28 @@ export function sessionContext(db: Db, sessionId: string): ContextAgent[] {
               u.output, u.cost_usd AS cost, u.cost_source AS costSource
        FROM tree JOIN usage u ON u.session_id = tree.id ORDER BY u.session_id, u.ts, u.seq`,
     )
-    .all(sessionId) as unknown as (ContextPoint & { sessionId: string })[];
+    .all(sessionId) as unknown as ContextUsageRow[];
   for (const { sessionId: id, ts, model, input, cacheRead, cacheWrite, output, cost, costSource } of rows) {
-    const list = requests.get(id) ?? [];
-    list.push({ ts, model, input, cacheRead, cacheWrite, output, cost, costSource });
-    requests.set(id, list);
+    const list = requests.get(id);
+    const point: ContextPoint = { ts, seq: null, prompt: null, model, input, cacheRead, cacheWrite, output, cost, costSource };
+    if (list) list.push(point);
+    else requests.set(id, [point]);
   }
+  const timeline = new Map<string, ContextEventRow[]>();
+  const events = db
+    .prepare(
+      `${SUBTREE} SELECT e.session_id AS sessionId, e.seq, e.ts,
+              CASE WHEN e.kind = 'user' THEN substr(e.text, 1, ${CONTEXT_PROMPT_MAX * 2}) END AS prompt
+       FROM tree JOIN events e ON e.session_id = tree.id ORDER BY e.session_id, e.ts, e.seq`,
+    )
+    .all(sessionId) as unknown as ContextEventRow[];
+  for (const e of events) {
+    const list = timeline.get(e.sessionId);
+    if (list) list.push(e);
+    else timeline.set(e.sessionId, [e]);
+  }
+  for (const [id, list] of requests) attachEvents(list, timeline.get(id) ?? []);
+
   const markers = new Map<string, number[]>();
   const marks = db
     .prepare(

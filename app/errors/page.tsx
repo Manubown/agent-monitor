@@ -8,7 +8,7 @@ import { sessionHref } from "../components/search/shared";
 import { StackedBarChart } from "../components/StackedBarChart";
 import { Empty, SourceBadge, Tile } from "../components/ui";
 import { dateTime, dayRange, integer, localDay, project, shortDay } from "../lib/format";
-import { filtersFrom, RANGES, ready, type SearchParams } from "../lib/server";
+import { filtersFrom, queryOf, RANGES, ready, type SearchParams } from "../lib/server";
 import "../insights.css";
 
 /** Examples listed per category. */
@@ -76,7 +76,7 @@ export default async function ErrorsPage({ searchParams }: { searchParams: Promi
   const db = await ready();
   const t = errorTaxonomy(db, f, EXAMPLES);
   const options = filterOptions(db);
-  const current = { range: f.range, source: f.source, project: f.cwd, tag: f.tag };
+  const current = queryOf(f);
   const present = t.byCategory.filter((c) => c.count > 0);
   const columns = ERROR_CATEGORIES.map((c) => c.key).filter((k) => t.byCategory.some((c) => c.category === k && c.count > 0));
   const max = Math.max(1, ...t.byCategory.map((c) => c.count));
@@ -89,10 +89,17 @@ export default async function ErrorsPage({ searchParams }: { searchParams: Promi
     tools.push({ key: `${rest.length} more tools`, total: rest.reduce((sum, r) => sum + r.total, 0), counts });
   }
 
-  // Continuous day axis from the range start (or the first error) to today, so quiet days show as gaps.
+  // Continuous day axis from the range start (or the first error) to the end of the range, so quiet days show as gaps.
+  const until = f.to === undefined ? Date.now() : Math.min(f.to - 1, Date.now());
   const firstDay = f.from !== undefined ? localDay(f.from) : t.byDay[0]?.key;
-  const days = firstDay ? dayRange(firstDay, localDay(Date.now())) : [];
+  const days = firstDay ? dayRange(firstDay, localDay(until)) : [];
   const perDay = new Map(t.byDay.map((d) => [d.key, d]));
+  /** A column drills into that day's errors: the same page, its window narrowed to the day. */
+  const dayHrefs = days.map((d) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries({ ...current, from: d, to: d })) if (v) qs.set(k, v);
+    return `/errors?${qs}`;
+  });
 
   return (
     <>
@@ -146,12 +153,13 @@ export default async function ErrorsPage({ searchParams }: { searchParams: Promi
             <section className="card" aria-labelledby="per-day">
               <div className="card-head">
                 <h2 id="per-day">Per day</h2>
-                <span className="muted">failures by category</span>
+                <span className="muted">failures by category · open a day</span>
               </div>
               <StackedBarChart
                 labels={days.map((d) => new Date(`${d}T12:00:00`).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }))}
                 ticks={days.map(shortDay)}
                 series={columns.map((c) => ({ key: c, label: LABEL[c], color: COLOR[c], values: days.map((d) => perDay.get(d)?.counts[c] ?? 0) }))}
+                hrefs={dayHrefs}
                 format="tokens"
                 ariaLabel="Failures per day by category"
               />

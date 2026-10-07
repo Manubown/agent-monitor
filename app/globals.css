@@ -6,7 +6,8 @@
   --ink: #0b0b0b;
   --ink-2: #52514e;
   --ink-muted: #6f6d68;
-  --axis-text: #898781;
+  /* Axis ticks and chart labels: 5.3:1 on --surface (small text, so it has to clear 4.5:1). */
+  --axis-text: #6b6964;
   --grid: #e1e0d9;
   --baseline: #c3c2b7;
   --border: rgba(11, 11, 11, 0.1);
@@ -566,13 +567,29 @@ tbody tr:hover {
   font-variant-numeric: tabular-nums;
 }
 
-.chart-col:focus {
-  outline: none;
+/* One tab stop: the plot takes focus, the selected column is marked inside it. */
+.chart-plot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
-.chart-col:focus-visible .chart-hit {
+.chart-link {
+  cursor: pointer;
+}
+
+.chart-plot:focus-visible .chart-col-active .chart-hit {
   stroke: var(--accent);
   stroke-width: 1;
+}
+
+/* Live region for the selected column: read out, never drawn (the tooltip shows the same values). */
+.chart-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .tooltip {

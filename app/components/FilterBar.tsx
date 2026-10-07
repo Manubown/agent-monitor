@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { dayRangeLabel } from "../lib/format";
 
 interface Option {
   value: string;
@@ -23,6 +24,8 @@ export function FilterBar({ ranges, sources, projects, current, search }: Props)
   const router = useRouter();
   const pathname = usePathname();
   const [q, setQ] = useState(current.q ?? "");
+  // A custom from/to window (a day drilled into from a chart) replaces the range, so no range button is current.
+  const custom = dayRangeLabel(current.from, current.to);
 
   const href = (changes: Record<string, string | undefined>) => {
     const params = new URLSearchParams();
@@ -41,7 +44,13 @@ export function FilterBar({ ranges, sources, projects, current, search }: Props)
     <div className="filters">
       <nav className="segmented" aria-label="Time range">
         {ranges.map((r) => (
-          <Link key={r.value} href={href({ range: r.value })} aria-current={current.range === r.value ? "true" : undefined} scroll={false}>
+          <Link
+            key={r.value}
+            // Picking a range leaves the custom window: the two cannot both describe the time scope.
+            href={href({ range: r.value, from: undefined, to: undefined, day: undefined })}
+            aria-current={!custom && current.range === r.value ? "true" : undefined}
+            scroll={false}
+          >
             {r.label}
           </Link>
         ))}
@@ -67,6 +76,19 @@ export function FilterBar({ ranges, sources, projects, current, search }: Props)
         <span className="filter-chip">
           #{current.tag}
           <Link href={href({ tag: undefined })} aria-label={`Remove tag filter ${current.tag}`} title="Remove tag filter" scroll={false}>
+            ×
+          </Link>
+        </span>
+      )}
+      {custom && (
+        <span className="filter-chip">
+          {custom}
+          <Link
+            href={href({ from: undefined, to: undefined, day: undefined })}
+            aria-label={`Remove the custom range ${custom}`}
+            title="Back to the time range"
+            scroll={false}
+          >
             ×
           </Link>
         </span>

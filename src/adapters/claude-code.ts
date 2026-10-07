@@ -1,5 +1,5 @@
 import path from "node:path";
-import { type Adapter, arr, homeDir, jsonLines, num, obj, shellCommand, str, stringifyInput, titleFrom, toMs } from "../core/adapter";
+import { type Adapter, arr, homeDir, jsonParser, type LogParser, num, obj, shellCommand, str, stringifyInput, titleFrom, toMs } from "../core/adapter";
 import { COMPACTION_TEXT } from "../core/compaction";
 import type { AgentEvent, ParsedSession, UsageRecord } from "../core/types";
 
@@ -18,8 +18,8 @@ export const claudeCodeAdapter: Adapter = {
   label: "Claude Code",
   roots: (env) => [path.join(env.CLAUDE_CONFIG_DIR || path.join(homeDir(env), ".claude"), "projects")],
   match: (filePath) => filePath.endsWith(".jsonl"),
-  parse: parseClaudeCode,
-  resumeCommand: (s) => (s.parentNativeId ? undefined : shellCommand(s.cwd, "claude", "--resume", s.nativeId)),
+  parser: claudeCodeParser,
+  resumeCommand: (s) => (s.parentNativeId ? undefined : shellCommand(s, "claude", "--resume", s.nativeId)),
 };
 
 const SUBAGENT_PATH = /[\\/]([^\\/]+)[\\/]subagents[\\/](agent-[^\\/]+)\.jsonl$/;
@@ -41,7 +41,7 @@ const blockText = (content: unknown): string => {
     .join("\n");
 };
 
-export function parseClaudeCode(filePath: string, content: string): ParsedSession | null {
+export function claudeCodeParser(filePath: string): LogParser {
   const sub = SUBAGENT_PATH.exec(filePath);
   let dispatchIndex: number | undefined;
   let sessionId: string | undefined;
@@ -55,11 +55,26 @@ export function parseClaudeCode(filePath: string, content: string): ParsedSessio
   // A fork (/branch, --fork-session) starts with copies of the original's lines, marked `forkedFrom`; it started at its first own line.
   let firstOwnTs: number | undefined;
   let lastTs = 0;
+  /** The first human prompt and the first injected text, kept here so a title needs no scan over the events. */
+  let firstUser: string | undefined;
+  let firstSystem: string | undefined;
   const events: AgentEvent[] = [];
-  const usageById = new Map<string, UsageRecord>();
+  /** Usage by message id: a later line with the same id replaces its record (a new object, in the same place). */
+  const usage: UsageRecord[] = [];
+  const usageAt = new Map<string, number>();
+  const toolNames = new Map<string, string | undefined>();
   const seenBlocks = new Set<string>();
 
-  for (const line of jsonLines(content)) {
+  /** Add one event, keeping what the result needs: a tool result carries only the call id, so the name is copied across. */
+  const add = (e: AgentEvent): void => {
+    if (e.kind === "user") firstUser ??= e.text;
+    else if (e.kind === "system") firstSystem ??= e.text;
+    else if (e.kind === "tool_call" && e.toolCallId !== undefined) toolNames.set(e.toolCallId, e.toolName);
+    else if (e.kind === "tool_result" && !e.toolName && e.toolCallId !== undefined) e.toolName = toolNames.get(e.toolCallId);
+    events.push(e);
+  };
+
+  const read = (line: Record<string, unknown>): void => {
     const ts = toMs(line.timestamp);
     if (ts !== undefined) {
       if (firstTs === undefined || ts < firstTs) firstTs = ts;
@@ -84,9 +99,9 @@ export function parseClaudeCode(filePath: string, content: string): ParsedSessio
         break;
       case "system":
         if (line.level === "error" || line.subtype === "api_error") {
-          events.push({ ts: at, kind: "error", text: str(line.content) ?? "API error", isError: true });
+          add({ ts: at, kind: "error", text: str(line.content) ?? "API error", isError: true });
         } else if (line.subtype === "compact_boundary") {
-          events.push({ ts: at, kind: "system", text: COMPACTION_TEXT });
+          add({ ts: at, kind: "system", text: COMPACTION_TEXT });
         }
         break;
       case "user": {
@@ -99,7 +114,7 @@ export function parseClaudeCode(filePath: string, content: string): ParsedSessio
           const injected = INJECTED.test(text);
           // A subagent's first real "user" text is the task its parent sent.
           if (sub !== null && dispatchIndex === undefined && line.isMeta !== true && line.isCompactSummary !== true && !injected) dispatchIndex = events.length;
-          events.push({ ts: at, kind: meta || injected ? "system" : "user", text });
+          add({ ts: at, kind: meta || injected ? "system" : "user", text });
         };
         if (typeof message.content === "string") {
           pushText(message.content);
@@ -110,7 +125,7 @@ export function parseClaudeCode(filePath: string, content: string): ParsedSessio
           if (!block) continue;
           if (block.type === "text") pushText(str(block.text) ?? "");
           else if (block.type === "tool_result") {
-            events.push({
+            add({
               ts: at,
               kind: "tool_result",
               text: blockText(block.content),
@@ -128,7 +143,7 @@ export function parseClaudeCode(filePath: string, content: string): ParsedSessio
         const model = str(message.model) ?? "unknown";
         if (model === "<synthetic>") {
           const text = blockText(message.content);
-          if (text) events.push({ ts: at, kind: line.isApiErrorMessage ? "error" : "system", text, isError: line.isApiErrorMessage === true });
+          if (text) add({ ts: at, kind: line.isApiErrorMessage ? "error" : "system", text, isError: line.isApiErrorMessage === true });
           break;
         }
         arr(message.content).forEach((b) => {
@@ -138,22 +153,23 @@ export function parseClaudeCode(filePath: string, content: string): ParsedSessio
             const key = `tool:${str(block.id)}`;
             if (seenBlocks.has(key)) return;
             seenBlocks.add(key);
-            events.push({ ts: at, kind: "tool_call", toolName: str(block.name), toolCallId: str(block.id), toolInput: stringifyInput(block.input), model });
+            add({ ts: at, kind: "tool_call", toolName: str(block.name), toolCallId: str(block.id), toolInput: stringifyInput(block.input), model });
           } else if (block.type === "text" || block.type === "thinking") {
             const text = str(block.type === "text" ? block.text : block.thinking);
             if (!text) return; // thinking is often omitted (empty) on newer models
             const key = `${id}:${block.type}:${text}`;
             if (seenBlocks.has(key)) return;
             seenBlocks.add(key);
-            events.push({ ts: at, kind: block.type === "text" ? "assistant" : "thinking", text, model });
+            add({ ts: at, kind: block.type === "text" ? "assistant" : "thinking", text, model });
           } else if (typeof block.type === "string" && block.type.endsWith("_tool_result")) {
-            events.push({ ts: at, kind: "tool_result", toolCallId: str(block.tool_use_id), text: stringifyInput(block.content) });
+            add({ ts: at, kind: "tool_result", toolCallId: str(block.tool_use_id), text: stringifyInput(block.content) });
           }
         });
         const u = obj(message.usage);
         if (u) {
-          const previous = usageById.get(id);
-          usageById.set(id, {
+          const seen = usageAt.get(id);
+          const previous = seen === undefined ? undefined : usage[seen];
+          const record: UsageRecord = {
             ts: previous?.ts ?? at,
             model,
             usage: {
@@ -167,34 +183,36 @@ export function parseClaudeCode(filePath: string, content: string): ParsedSessio
             reportedCostUsd: typeof line.costUSD === "number" ? line.costUSD : undefined,
             // Forks (/branch, --fork-session) and resumes copy these lines verbatim into the new transcript.
             requestId: str(message.id) ? `${str(message.id)}:${str(line.requestId) ?? ""}` : undefined,
-          });
+          };
+          if (seen === undefined) {
+            usageAt.set(id, usage.length);
+            usage.push(record);
+          } else usage[seen] = record;
         }
         break;
       }
     }
-  }
-
-  const usage = [...usageById.values()];
-  if (events.length === 0 && usage.length === 0) return null;
-
-  // Tool results only carry the call id; copy the tool name across for the UI.
-  const toolNames = new Map(events.filter((e) => e.kind === "tool_call").map((e) => [e.toolCallId, e.toolName]));
-  for (const e of events) if (e.kind === "tool_result" && !e.toolName) e.toolName = toolNames.get(e.toolCallId);
-
-  // A subagent has no human prompt; its title is the task the parent gave it.
-  const firstUser = events.find((e) => e.kind === "user")?.text ?? (sub ? events.find((e) => e.kind === "system")?.text : undefined);
-  return {
-    source: "claude-code",
-    nativeId: sub ? `${sub[1]}/${sub[2]}` : (sessionId ?? path.basename(filePath, ".jsonl")),
-    parentNativeId: sub?.[1],
-    dispatchIndex,
-    title: customTitle || aiTitle || summary || titleFrom(firstUser),
-    cwd,
-    gitBranch,
-    agentVersion,
-    startedAt: firstOwnTs ?? firstTs ?? lastTs,
-    endedAt: lastTs,
-    events,
-    usage,
   };
+
+  const result = (): ParsedSession | null => {
+    if (events.length === 0 && usage.length === 0) return null;
+    // A subagent has no human prompt; its title is the task the parent gave it.
+    const firstPrompt = firstUser ?? (sub ? firstSystem : undefined);
+    return {
+      source: "claude-code",
+      nativeId: sub ? `${sub[1]}/${sub[2]}` : (sessionId ?? path.basename(filePath, ".jsonl")),
+      parentNativeId: sub?.[1],
+      dispatchIndex,
+      title: customTitle || aiTitle || summary || titleFrom(firstPrompt),
+      cwd,
+      gitBranch,
+      agentVersion,
+      startedAt: firstOwnTs ?? firstTs ?? lastTs,
+      endedAt: lastTs,
+      events,
+      usage,
+    };
+  };
+
+  return jsonParser(read, result);
 }

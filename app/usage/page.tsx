@@ -5,9 +5,9 @@ import { claudeUsage, filterOptions } from "../../src/store/queries";
 import { FilterBar } from "../components/FilterBar";
 import { StackedBarChart } from "../components/StackedBarChart";
 import { Empty, PulseDot, Tile } from "../components/ui";
-import { dateTime, duration, integer, project, tokens, usd } from "../lib/format";
+import { dateTime, duration, integer, localDay, project, tokens, usd } from "../lib/format";
 import { oneOfList } from "../lib/params";
-import { filtersFrom, RANGES, ready, type SearchParams } from "../lib/server";
+import { filtersFrom, queryOf, RANGES, ready, type SearchParams } from "../lib/server";
 
 const DEFAULT_RANGE = "7d";
 const RANGE_IDS = RANGES.map((r) => r.id);
@@ -104,6 +104,14 @@ export default async function UsagePage({ searchParams }: { searchParams: Promis
   const active = blocks.find((b) => b.active);
   const options = filterOptions(db);
   const busiest = blocks.reduce((max, b) => Math.max(max, b.totalTokens), 0);
+  const current = queryOf(f);
+  /** A window drills into the sessions of the days it covers (a window can straddle midnight). */
+  const blockHrefs = blocks.map((b) => {
+    const qs = new URLSearchParams();
+    const bounds = { from: localDay(b.start), to: localDay(Math.min(b.end - 1, now)) };
+    for (const [k, v] of Object.entries({ ...current, ...bounds })) if (v) qs.set(k, v);
+    return `/sessions?${qs}`;
+  });
 
   return (
     <>
@@ -115,7 +123,7 @@ export default async function UsagePage({ searchParams }: { searchParams: Promis
         ranges={RANGES.map((r) => ({ value: r.id, label: r.label }))}
         sources={options.sources.map((s) => ({ value: s, label: sourceLabel(s) }))}
         projects={options.projects.map((p) => ({ value: p, label: project(p) }))}
-        current={{ range: f.range, source: f.source, project: f.cwd, tag: f.tag }}
+        current={current}
       />
       <div className="note">
         <p>
@@ -152,13 +160,14 @@ export default async function UsagePage({ searchParams }: { searchParams: Promis
           <section className="card">
             <div className="card-head">
               <h2>Tokens per window</h2>
-              <span className="muted">all token types, oldest first</span>
+              <span className="muted">all token types, oldest first · open the sessions of a window</span>
             </div>
             <StackedBarChart
               labels={blocks.map((b) => `${dateTime(b.start)} – ${hm(b.end)}${b.active ? " (active)" : ""}`)}
               ticks={blocks.map((b) => new Date(b.start).toLocaleDateString("en-GB", { day: "numeric", month: "short" }))}
               series={TOKEN_SERIES.map((s) => ({ ...s, values: blocks.map((b) => b.tokens[s.key]) }))}
               notes={blocks.map((b) => [`${integer(b.requests)} requests · ${usd(b.cost)}`, b.models.join(", ")])}
+              hrefs={blockHrefs}
               format="tokens"
               ariaLabel="Tokens per 5-hour window by token type"
             />

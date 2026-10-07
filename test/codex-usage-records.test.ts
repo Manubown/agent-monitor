@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { parseCodex } from "../src/adapters/codex";
+import { codexAdapter } from "../src/adapters/codex";
+import { parseLog } from "../src/core/adapter";
 
 /** Codex 0.160+ rollouts: a `token_usage_record` per model response, then the `token_count` with the new running total. */
 
@@ -43,7 +44,7 @@ const T1 = R1;
 const R2 = { input: 2000, cached: 1500, output: 80 };
 const T2 = { input: 3000, cached: 2100, write: 100, output: 130, reasoning: 10 };
 
-const parse = (lines: object[]) => parseCodex(`/r/rollout-2026-10-05T12-00-00-${ID}.jsonl`, jsonl(lines))!;
+const parse = (lines: object[]) => parseLog(codexAdapter, `/r/rollout-2026-10-05T12-00-00-${ID}.jsonl`, jsonl(lines))!;
 
 describe("codex token_usage_record", () => {
   it("counts one request per record, keyed by response id, with cache reads and writes out of input", () => {

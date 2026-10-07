@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { parseClaudeCode } from "../src/adapters/claude-code";
-import { parseCodex } from "../src/adapters/codex";
-import { parseOmp } from "../src/adapters/omp";
+import { claudeCodeAdapter } from "../src/adapters/claude-code";
+import { codexAdapter } from "../src/adapters/codex";
+import { ompAdapter } from "../src/adapters/omp";
+import { parseLog } from "../src/core/adapter";
 import type { ParsedSession } from "../src/core/types";
 
 const fixture = (rel: string) => {
@@ -14,7 +15,7 @@ const fixture = (rel: string) => {
 const kinds = (s: ParsedSession) => s.events.map((e) => e.kind);
 
 describe("omp adapter", () => {
-  const s = parseOmp(...fixture("omp/-proj/2026-10-01T09-00-00-000Z_aaa111.jsonl"))!;
+  const s = parseLog(ompAdapter, ...fixture("omp/-proj/2026-10-01T09-00-00-000Z_aaa111.jsonl"))!;
 
   it("reads session metadata, preferring the rewritten title line", () => {
     expect(s).toMatchObject({ source: "omp", nativeId: "aaa111", title: "Fix login bug", cwd: "/work/proj" });
@@ -42,7 +43,7 @@ describe("omp adapter", () => {
   });
 
   it("links subagent runs to their parent and names them after the task file", () => {
-    const sub = parseOmp(...fixture("omp/-proj/2026-10-01T09-00-00-000Z_aaa111/Research.jsonl"))!;
+    const sub = parseLog(ompAdapter, ...fixture("omp/-proj/2026-10-01T09-00-00-000Z_aaa111/Research.jsonl"))!;
     expect(sub).toMatchObject({ nativeId: "bbb222", parentNativeId: "aaa111", title: "Research", dispatchIndex: 0 });
     expect(sub.events[0].text).toBe("research the auth library");
     // A prompt written by the parent agent is not a human prompt.
@@ -51,12 +52,12 @@ describe("omp adapter", () => {
   });
 
   it("returns null for a file without a session", () => {
-    expect(parseOmp("/x/empty.jsonl", "")).toBeNull();
+    expect(parseLog(ompAdapter, "/x/empty.jsonl", "")).toBeNull();
   });
 });
 
 describe("claude-code adapter", () => {
-  const s = parseClaudeCode(...fixture("claude-code/-proj/sess-1.jsonl"))!;
+  const s = parseLog(claudeCodeAdapter, ...fixture("claude-code/-proj/sess-1.jsonl"))!;
 
   it("reads metadata and the AI-generated title", () => {
     expect(s).toMatchObject({
@@ -87,7 +88,7 @@ describe("claude-code adapter", () => {
   });
 
   it("identifies subagent transcripts by path", () => {
-    const sub = parseClaudeCode(...fixture("claude-code/-proj/sess-1/subagents/agent-xyz.jsonl"))!;
+    const sub = parseLog(claudeCodeAdapter, ...fixture("claude-code/-proj/sess-1/subagents/agent-xyz.jsonl"))!;
     expect(sub).toMatchObject({ nativeId: "sess-1/agent-xyz", parentNativeId: "sess-1", title: "Find the theme file", dispatchIndex: 0 });
     expect(kinds(sub)).toEqual(["system", "assistant"]);
     expect(sub.usage[0].model).toBe("claude-haiku-4-5-20251001");
@@ -95,7 +96,7 @@ describe("claude-code adapter", () => {
 });
 
 describe("codex adapter", () => {
-  const s = parseCodex(...fixture("codex/2026/10/01/rollout-2026-10-01T12-00-00-ccc333.jsonl"))!;
+  const s = parseLog(codexAdapter, ...fixture("codex/2026/10/01/rollout-2026-10-01T12-00-00-ccc333.jsonl"))!;
 
   it("reads session_meta and turn_context", () => {
     expect(s).toMatchObject({ source: "codex", nativeId: "ccc333", cwd: "/work/proj", gitBranch: "feat/x", agentVersion: "0.50.0", title: "Run the tests" });
@@ -117,7 +118,7 @@ describe("codex adapter", () => {
 describe("codex adapter, legacy rollouts", () => {
   // Codex CLI 2025 rollouts: a bare session meta line, then bare response items and state snapshots, no timestamps.
   const ID = "0f0e0d0c-0b0a-4908-8706-050403020100";
-  const s = parseCodex(...fixture(`codex-legacy/rollout-2025-06-01T10-00-00-${ID}.jsonl`))!;
+  const s = parseLog(codexAdapter, ...fixture(`codex-legacy/rollout-2025-06-01T10-00-00-${ID}.jsonl`))!;
   const start = Date.parse("2025-06-01T10:00:00.000Z");
 
   it("reads the bare meta line, and the working directory from the environment context", () => {
@@ -136,11 +137,11 @@ describe("codex adapter, legacy rollouts", () => {
   });
 
   it("reports a file with lines in no known shape instead of storing an empty session", () => {
-    expect(() => parseCodex("/r/rollout-x.jsonl", '{"foo":1}\n{"bar":[2]}\n')).toThrow(/Unrecognized Codex rollout/);
+    expect(() => parseLog(codexAdapter, "/r/rollout-x.jsonl", '{"foo":1}\n{"bar":[2]}\n')).toThrow(/Unrecognized Codex rollout/);
     // Nothing complete yet (a rollout being created) is no session, not an error.
-    expect(parseCodex("/r/rollout-x.jsonl", "")).toBeNull();
-    expect(parseCodex("/r/rollout-x.jsonl", '{"timestamp":"2026-10-01T12:00:00.000Z","type":"session_me')).toBeNull();
+    expect(parseLog(codexAdapter, "/r/rollout-x.jsonl", "")).toBeNull();
+    expect(parseLog(codexAdapter, "/r/rollout-x.jsonl", '{"timestamp":"2026-10-01T12:00:00.000Z","type":"session_me')).toBeNull();
     // Only state snapshots: a legacy rollout without content.
-    expect(parseCodex("/r/rollout-x.jsonl", '{"record_type":"state"}\n')).toBeNull();
+    expect(parseLog(codexAdapter, "/r/rollout-x.jsonl", '{"record_type":"state"}\n')).toBeNull();
   });
 });

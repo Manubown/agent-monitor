@@ -5,7 +5,7 @@ import { dirKey, fileKey } from "../core/paths";
 import { totalTokens } from "../core/types";
 import { clip, displayPath } from "./activity";
 import { type Db, generation } from "./db";
-import { byProject, type Filters, where } from "./queries";
+import { byProject, type Filters, SESSION_ACTIVE, where } from "./queries";
 import { SUBTREE } from "./tree";
 
 /**
@@ -216,7 +216,7 @@ export function sessionLog(db: Db, sessionId: string, home: string = os.homedir(
 
 /** Sessions of `cwd` the filters keep (source, title search, tag); time is applied per touch. */
 function allowedSessions(db: Db, cwd: string, f: Filters): Set<string> {
-  const w = where({ ...f, from: undefined, cwd }, null);
+  const w = where({ ...f, from: undefined, to: undefined, cwd }, null);
   return new Set((db.prepare(`SELECT s.id FROM sessions s ${w.sql}`).all(...w.params) as { id: string }[]).map((r) => r.id));
 }
 
@@ -225,7 +225,8 @@ function filtered(db: Db, cwd: string, f: Filters, log: TouchLog): Touch[] {
   const allowed = allowedSessions(db, cwd, f);
   const keep = log.sessions.map((s) => allowed.has(s.id));
   const from = f.from ?? -Infinity;
-  return log.touches.filter((t) => keep[t.session] && t.ts >= from);
+  const to = f.to ?? Infinity;
+  return log.touches.filter((t) => keep[t.session] && t.ts >= from && t.ts < to);
 }
 
 export interface FileCounts {
@@ -396,7 +397,7 @@ export interface ProjectSummary {
 
 /** Every project (distinct working directory) with sessions active in the filters, most recently active first. */
 export function listProjects(db: Db, f: Filters, home: string = os.homedir()): ProjectSummary[] {
-  const w = where(f, "s.ended_at");
+  const w = where(f, SESSION_ACTIVE);
   const rows = db
     .prepare(
       `SELECT s.cwd AS cwd, COUNT(CASE WHEN s.parent_id IS NULL THEN 1 END) AS sessions, COUNT(*) AS agents,

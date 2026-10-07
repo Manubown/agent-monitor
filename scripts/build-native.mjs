@@ -30,6 +30,24 @@ const targetDir = process.env.CARGO_TARGET_DIR
 
 const sha256 = (buf) => createHash("sha256").update(buf).digest("hex");
 
+// Replacing a loaded addon fails: Windows locks the mapped file (EPERM on rename, EBUSY on copy, EACCES
+// when a scanner holds it), POSIX reports ETXTBSY (EBUSY on some mounts). On POSIX, EPERM and EACCES mean
+// permissions instead (read-only checkout, root-owned native/), so they stay a plain error and may still
+// fall back to cargo. A real lock is fatal: cargo would write the same file.
+const LOCKED = new Set(process.platform === "win32" ? ["EPERM", "EACCES", "EBUSY"] : ["ETXTBSY", "EBUSY"]);
+
+/** Runs a write to `out`; exits with advice when another process holds the addon. */
+function replaceOut(write) {
+  try {
+    write();
+  } catch (error) {
+    if (!LOCKED.has(error?.code)) throw error;
+    console.error(`build:native: cannot replace ${path.relative(root, out)}: ${error.code} on ${error.syscall ?? "write"}.`);
+    console.error("build:native: another process still has the search addon loaded. Stop the running server (pnpm dev, pnpm start, pnpm demo, pnpm watch) and try again.");
+    process.exit(1);
+  }
+}
+
 function fromSourceReason() {
   const flag = process.env.AGENT_MONITOR_BUILD_FROM_SOURCE;
   if (flag === "1") return "AGENT_MONITOR_BUILD_FROM_SOURCE=1";
@@ -75,9 +93,17 @@ async function downloadPrebuilt() {
     const bin = await get(asset);
     const actual = sha256(bin);
     if (actual !== expected) return `checksum mismatch for ${asset}: expected ${expected}, got ${actual}`;
+    // Only the rename can hit a loaded addon; writing the temp file next to it is an ordinary write.
     const tmp = `${out}.download`;
     writeFileSync(tmp, bin, { mode: 0o755 });
-    renameSync(tmp, out);
+    replaceOut(() => {
+      try {
+        renameSync(tmp, out);
+      } catch (error) {
+        rmSync(tmp, { force: true });
+        throw error;
+      }
+    });
     writeFileSync(stamp, `${JSON.stringify({ version, asset, sha256: actual }, null, 2)}\n`);
     console.log(`build:native: wrote ${path.relative(root, out)} (prebuilt v${version}, sha256 verified)`);
     return null;
@@ -113,7 +139,7 @@ function buildFromSource(why) {
     console.error(`build:native: expected build output not found: ${built}`);
     process.exit(1);
   }
-  copyFileSync(built, out);
+  replaceOut(() => copyFileSync(built, out));
   rmSync(stamp, { force: true });
   console.log(`build:native: wrote ${path.relative(root, out)}`);
 }

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, type Hash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -35,6 +35,11 @@ export interface ArchiveState {
   gzSize: number;
 }
 
+/** What a write left behind, with the running hash over those bytes so an append need not hash the prefix again. */
+export interface ArchiveWrite extends ArchiveState {
+  running: Hash;
+}
+
 const gzSizeOf = async (file: string): Promise<number | null> => {
   try {
     const stat = await fs.stat(file);
@@ -58,7 +63,8 @@ export const PREVIOUS_SUFFIX = ".prev";
  * the copy atomically (write + rename), so a crash never leaves a truncated archive. An append whose .gz does not
  * end up the size it should (another process appended the same tail at the same time) is redone as a rewrite. When
  * `previous` shows the log no longer starts with what the copy holds, the replaced copy is kept next to the new one
- * (see PREVIOUS_SUFFIX), so history the tool dropped stays archived. Returns the new state.
+ * (see PREVIOUS_SUFFIX), so history the tool dropped stays archived. Returns the new state, including the running
+ * hash of the bytes the copy now holds (see `appendArchive`).
  */
 export async function writeArchive(
   archiveDir: string,
@@ -66,7 +72,7 @@ export async function writeArchive(
   filePath: string,
   content: Buffer,
   previous: ArchiveState | null = null,
-): Promise<ArchiveState> {
+): Promise<ArchiveWrite> {
   const target = archivePath(archiveDir, adapterId, filePath);
   const hash = createHash("sha1");
   let prefixMatches = false;
@@ -76,10 +82,10 @@ export async function writeArchive(
     prefixMatches = hash.copy().digest("hex") === previous.hash;
     hash.update(content.subarray(previous.size));
   } else hash.update(content);
-  const state = { size: content.length, hash: hash.digest("hex"), gzSize: 0 };
+  const state = { size: content.length, hash: hash.copy().digest("hex"), gzSize: 0 };
 
   if (previous && prefixMatches && (await gzSizeOf(target)) === previous.gzSize) {
-    if (content.length === previous.size) return previous;
+    if (content.length === previous.size) return { ...previous, running: hash };
     const member = await gzip(content.subarray(previous.size));
     try {
       await fs.appendFile(target, member);
@@ -90,7 +96,7 @@ export async function writeArchive(
     const gzSize = previous.gzSize + member.length;
     // Two processes (the server and `pnpm watch`) can both pass the size check and append the same tail. Each then
     // sees the other's bytes and rewrites the copy whole from its own content.
-    if ((await gzSizeOf(target)) === gzSize) return { ...state, gzSize };
+    if ((await gzSizeOf(target)) === gzSize) return { ...state, gzSize, running: hash };
   }
 
   await fs.mkdir(path.dirname(target), { recursive: true });
@@ -108,11 +114,44 @@ export async function writeArchive(
     const gz = await gzip(content);
     await fs.writeFile(tmp, gz);
     await fs.rename(tmp, target);
-    return { ...state, gzSize: gz.length };
+    return { ...state, gzSize: gz.length, running: hash };
   } catch (error) {
     await fs.rm(tmp, { force: true });
     throw error;
   }
+}
+
+/**
+ * Append `added` to the archived copy as one more gzip member, for a log whose first `previous.size` bytes are
+ * known to be unchanged (sync checks that before reading only the new bytes, see src/ingest/incremental.ts).
+ * `running` is the sha1 of those bytes, extended by `added` instead of hashing the log again. Returns null when
+ * the copy is not exactly as our last write left it, or when another process appended at the same time: the caller
+ * then reads the whole log and rewrites the copy with `writeArchive`. A failed append is cut back off.
+ */
+export async function appendArchive(
+  archiveDir: string,
+  adapterId: string,
+  filePath: string,
+  added: Buffer,
+  previous: ArchiveState,
+  running: Hash,
+): Promise<ArchiveWrite | null> {
+  if (running.copy().digest("hex") !== previous.hash) return null; // Another process rewrote the copy.
+  const target = archivePath(archiveDir, adapterId, filePath);
+  if ((await gzSizeOf(target)) !== previous.gzSize) return null;
+  if (added.length === 0) return { ...previous, running };
+  const member = await gzip(added);
+  try {
+    await fs.appendFile(target, member);
+  } catch (error) {
+    await fs.truncate(target, previous.gzSize).catch(() => {});
+    throw error;
+  }
+  const gzSize = previous.gzSize + member.length;
+  // Two processes can both pass the size check and append the same tail; the copy is rewritten whole instead.
+  if ((await gzSizeOf(target)) !== gzSize) return null;
+  running.update(added);
+  return { size: previous.size + added.length, hash: running.copy().digest("hex"), gzSize, running };
 }
 
 const inflateRaw = (data: Buffer): Promise<{ buffer: Buffer; consumed: number }> =>

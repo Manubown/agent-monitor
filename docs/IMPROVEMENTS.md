@@ -10,16 +10,16 @@ requests from use (the "Dashboard and charts" section, added 2026-10-06).
 ### Windows
 
 - [x] **Analysis views treat paths as POSIX**: fixed with `src/core/paths.ts` (slash form, upper-case drive letter) and Windows fixtures. Follow-up: only the drive letter is case-folded, so `C:\Users\Me\x` and `C:\users\me\x` still count as two files.
-- [ ] **Resume command is POSIX shell** (`src/core/adapter.ts:46-52`, shown on the session page): `cd '<C:\…>' && claude --resume …` fails in cmd.exe and Windows PowerShell 5.1. Emit `Set-Location -LiteralPath '…'; …` on win32.
+- [x] **Resume command is POSIX shell**: the session page renders the command for the shell of the machine the dashboard runs on (`shellFor(process.platform)` in `src/core/adapter.ts`). On win32 that is `Set-Location -LiteralPath '<C:\…>' -ErrorAction Stop; claude --resume …` with PowerShell quoting (ASCII and typographic single quotes doubled), so a missing directory stops the line instead of starting the agent elsewhere. Not done: no cmd.exe form.
 - [ ] **Archive round trip depends on the drive letter's case** (`src/ingest/archive.ts`, `originalPath`): a root spelled `c:\…` comes back as `C:\…` and would be ingested twice (*unverified*). Upper-case the drive letter, compare paths case-insensitively on win32, add a `path.win32` round-trip test.
 - [x] **CI never runs on Windows**: the matrix now has `windows-latest`, plus Node 22.13.0 and 24.x on Ubuntu.
-- [ ] **`pnpm build:native` fails while the server runs** (`scripts/build-native.mjs:80,116`): the loaded addon cannot be replaced, the error reads "download failed" and it falls back to cargo. Detect EPERM/EBUSY and tell the user to stop the server first.
-- [ ] **Stopping `pnpm demo` leaves `next dev` running** on Windows (`scripts/demo.ts`, `child.kill`): the grandchild keeps port 4200. Kill the process tree (`taskkill /T`) on win32.
+- [x] **`pnpm build:native` fails while the server runs**: replacing a loaded addon (EPERM/EACCES/EBUSY on win32, EBUSY/ETXTBSY elsewhere) stops with "stop the running server first" instead of "download failed", a cargo fallback and an EBUSY stack trace.
+- [x] **Stopping `pnpm demo` leaves `next dev` running**: `serve` kills the process tree on win32 (`taskkill /T /F`, `child.kill` as fallback) and exits with the child's code. The leftover did not reproduce with Node 22.22 and Next 16.3.8 (libuv's job object takes the tree down with the parent); the tree kill covers descendants that leave that job.
 - [ ] Data lives under `%USERPROFILE%\.local\share\agent-monitor` (`src/store/db.ts:119`, `src/core/pricing.ts:56`); `%LOCALAPPDATA%` is the Windows convention. Needs a migration of the archive and `user.db`.
 
 ### Performance (matters for always-on use)
 
-- [ ] **Sync re-parses whole files** (`src/ingest/sync.ts`): the archive now appends a gzip member when only the tail changed, and the archive is listed only on the first sync per process. Still open: a grown log is decoded, parsed, hashed and auto-tagged in full on the Next server's event loop. Measured on a 14 MiB omp log: about 320 ms per sync (parse 105, write 66, decode 57, auto-tags 50, hashes 39 ms). The remaining fix is a byte offset plus resumable parser state per adapter, which changes the pure `parse(path, content)` contract, or running sync in a worker (needs a separate entry point next to the Next bundle).
+- [x] **Sync re-parses whole files**: adapters are incremental parsers (`Adapter.parser(path)` → `push(line)` / `result()`; `parseLog` derives the whole-file parse), and `src/ingest/incremental.ts` keeps, for up to 16 logs per database (32 MiB of logs, 30 min idle), the parser, the byte offset, the archive copy's running sha1 and what the last write stored. A log that only grew is read from its offset (after checking its first 64 KiB and the 4 KiB before the offset), appended to its archive copy as one gzip member, and stored by extending the event hash chain, the counters, the usage rows and the auto-tags (`AutoTagScan`, `LoopScan`) over the new events. Anything else (a rewritten prefix such as omp's title line, a shrunk log, `--full`, a write by another process, an archive copy not as we left it) takes the whole-file path, which rebuilds the state. Measured on a synthetic 14 MiB omp log after one appended turn: 545–687 ms → 11–15 ms. Not done: the first growth of a log after a server start is still read whole, sync still runs on the Next server's event loop, and the roots are still walked every 5 s (`fs.watch`).
 - [x] **Every sync lists the whole archive**: only on the first sync per database and process, with `--full`, or after a rebuild. Not done: `fs.watch` instead of walking the roots every 5 s.
 - [x] **Missing indexes**: `sessions(cwd, started_at, id)`, `sessions(ended_at)`, `events(ts, session_id)`, `events(kind, tool_name, is_error, ts, session_id)`, checked with `EXPLAIN QUERY PLAN` (full scans of `events` went from 15 to 1). The unused `events(tool_name)` index was dropped.
 - [x] **Projects cache keyed on the database generation**: parsed touches are cached per session and keyed by `events_hash`.
@@ -66,14 +66,14 @@ requests from use (the "Dashboard and charts" section, added 2026-10-06).
 ### UI polish and accessibility
 
 - [ ] The Motion toggle is ignored by `.pulse-dot` (`app/features.css:40-65`), parts of `app/search.css` and `graph.css`, and the smooth scroll in `TargetEvent.tsx`; scope them under `:root[data-motion="on"]`.
-- [ ] `app/components/StackedBarChart.tsx`: focusable `<g>` inside `<svg role="img">` has no role or name, one tab stop per column (up to 3,660 on "All time"), `key={label}` collides for yearless labels, `--axis-text` is about 3.4:1 on the light theme. One tab stop with arrow keys, index keys, darker tick token.
+- [x] `app/components/StackedBarChart.tsx`: one tab stop (the plot is a named `role="group"`), arrow keys, Home and End move between columns with a persistent live region, Enter opens the column; index keys; `--axis-text` at 5.3:1 on the light theme.
 - [ ] Heatmap cells don't link to their sessions yet.
 
 ### Missing tests
 
 - [ ] `proxy.ts` (the DNS-rebinding guard), `app/actions.ts` (tag writes), the API routes.
 - [ ] `user.db` tags surviving a `SCHEMA_VERSION` rebuild (`src/store/db.ts:155-165`).
-- [ ] `app/lib/server.ts`: `filtersFrom`, single-flight sync, the search-unavailable path.
+- [ ] `app/lib/server.ts`: single-flight sync, the search-unavailable path (`filtersFrom` is covered in `test/day.test.ts`).
 - [ ] The asset-name and `SHA256SUMS` contract between `scripts/build-native.mjs` and `release.yml`.
 
 ## Feature ideas
@@ -87,19 +87,12 @@ requests from use (the "Dashboard and charts" section, added 2026-10-06).
 
 ### Dashboard and charts
 
-- [ ] **Sessions first on the overview (S)**: the most-used thing (sessions) sits near the bottom of `app/page.tsx`, under the tiles, two charts, the heatmap, token mix, tools and models. Add a row of session cards (title, tool, project, last activity, cost, auto-tags) right under "Active now", sized to the viewport width. The next item builds on this; ship it on its own first.
-- [ ] **Modular dashboard (M)**: one widget per card instead of one 375-line page.
-  - *Registry*: `app/components/dashboard/widgets.ts` maps a stable id (`sessions`, `cost-per-day`, `heatmap`, `token-mix`, `tools`, `models`, `projects`, …) to a server component taking `(db, filters)`, a title and allowed sizes. Each widget runs only its own queries, so a hidden widget costs nothing.
-  - *Layout*: an ordered list of `{ id, w, h }` on a 12-column CSS grid. `w` is one of 3/4/6/8/12 columns and `h` is one of S/M/L row heights (presets rather than free pixel sizes). It is stored in `user.db` (a new `dashboard_layout` table, like tags, so it survives `SCHEMA_VERSION` rebuilds), and the current layout is the default. Columns collapse to full width on narrow screens.
-  - *Editing*: a "Customize" toggle shows per-card controls: move earlier or later, width and height presets, hide, add from the list, reset to default. They are keyboard accessible and saved through a server action. Drag-to-reorder (native HTML drag and drop, or `@dnd-kit` if that turns out too fiddly) is a later layer on top of the same layout model.
+- [x] **Sessions first on the overview (S)**: a row of session cards (`app/components/SessionCards.tsx`: title, tool, project, last activity, cost, tags, subagents, a pulse while running) sits under the filter bar and replaces the "Recent sessions" table; container queries show one to five cards in a single row depending on the width.
+- [x] **Modular dashboard (M)**: the overview is a 12-column grid of widgets. `app/components/dashboard/specs.ts` is the registry (stable id, title, allowed widths 3/4/6/8/12 and heights S/M/L); `widgets.tsx` holds one server component per id that runs its own queries, so a hidden widget costs nothing. The layout (`src/core/dashboard.ts`, pure) is an ordered list of `{ id, w, h }` stored in `user.dashboard_layout` (survives `SCHEMA_VERSION` rebuilds); without a stored row it is the old page order. "Customize" (`?customize=1`) shows per-card buttons (move earlier or later, width, height, hide) plus "Add widget" and "Reset to default", saved by the `updateDashboard` server action, which validates every edit against the registry. Cards fall back to 6 columns below 1100 px and to full width below 860 px; long tables scroll inside their height preset. The `?day=` panel follows the last visible per-day chart.
   - *Not planned*: free-form drag-resize grids such as `react-grid-layout`. They turn every card into a client component, which conflicts with server components reading SQLite directly. They are hard to use from the keyboard, and pixel layouts break between window sizes.
-  - Later: several named layouts (for example "cost" and "activity"), and the same widgets on the project and session pages.
-- [ ] **Clickable bars: "what was done on this day" (M)**: today `StackedBarChart` only shows a tooltip.
-  - *Chart*: add an optional `hrefs?: string[]` prop (a link per column) and keep the component generic. Combine this with the accessibility item above: one tab stop, arrow keys move between columns, Enter opens the column, index keys.
-  - *Overview / cost and tokens per day*: clicking a day sets `?day=YYYY-MM-DD`, which keeps all state in the URL like the other filters. A panel under the chart lists that day's sessions with their title, prompts (from `src/store/turns.ts`), auto-tags, top tools and files touched, plus cost and tokens; each row links to the session. The panel ends with "All N sessions on this day →", which needs a custom `from`/`to` in `Filters` (useful on its own).
-  - *Session page / context per request* (`app/components/turns/ContextCard.tsx`): clicking a request jumps to its event in the timeline (`?at=<seq>#e-<seq>`, as `TurnsCard` already does). The tooltip shows the turn's prompt, so you can see what the agent was working on when context grew. This needs `seq` on `ContextAgent.requests`.
-  - *Errors and usage charts*: the same `hrefs`, drilling into the errors or sessions of that bucket.
-  - Related: heatmap cells linking to their sessions (above) can use the same day/hour drill-down.
+  - [ ] Later: drag-to-reorder on the same layout model (native HTML drag and drop, or `@dnd-kit`), several named layouts (the table is keyed by name already), the same widgets on the project and session pages.
+- [x] **Clickable bars: "what was done on this day" (M)**: `StackedBarChart` takes `hrefs` (one link per column). On the overview a day opens `?day=YYYY-MM-DD` and a panel under the per-day charts (`app/components/DayPanel.tsx`, `src/store/day.ts`): that day's sessions with prompts, auto-tags, tools, changed files, tokens and cost, and "All N sessions on this day →". `Filters` gained an exclusive `to`; `from`/`to` local days in the URL override the range on every page (`filtersFrom`, `queryOf`), and inside such a window every query counts a session by its activity in the window (`SESSION_ACTIVE`), so tiles, panel, `/sessions` and projects agree. "Context per request" on the session page links each request to its event and shows the turn's prompt; the errors chart drills into that day's errors and the usage windows into their sessions.
+  - [ ] Not done: a date picker for the custom window. Heatmap cells (above) can reuse the same `from`/`to` drill-down.
 
 ### Product
 

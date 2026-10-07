@@ -1,0 +1,74 @@
+/* Overview: the "what was done on this day" panel (app/components/DayPanel.tsx). Tokens only. */
+
+.day-panel .card-head .btn {
+  flex: none;
+  margin-left: auto;
+}
+
+.day-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.day-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  align-items: start;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.day-row:last-child {
+  border-bottom: none;
+}
+
+.day-main {
+  min-width: 0;
+}
+
+.day-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
+.day-prompts {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.day-prompts li {
+  /* Prompts are one line each: the full text is in the title attribute and on the session page. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-left: 12px;
+  border-left: 2px solid var(--grid);
+}
+
+.day-prompts li + li {
+  margin-top: 2px;
+}
+
+.day-files {
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+.day-cost {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.day-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin-top: 12px;
+}

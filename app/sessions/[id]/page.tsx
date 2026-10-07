@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { adapterById } from "../../../src/adapters";
+import { shellFor } from "../../../src/core/adapter";
 import { totalTokens } from "../../../src/core/types";
 import { sessionActivity } from "../../../src/store/activity";
 import { dispatchPrompts } from "../../../src/store/dispatch";
@@ -128,7 +129,10 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
   const { session: s, parent, root, children, timelineCounts, tools } = detail;
   const live = isActive(s.total.lastActive, Date.now());
   // Subagents cannot be resumed on their own; offer the top-level session they belong to.
-  const resume = adapterById(root.source)?.resumeCommand?.({ nativeId: root.nativeId, cwd: root.cwd ?? undefined, filePath: root.filePath });
+  // The dashboard runs on the user's own machine, so this machine's platform picks the shell the command is pasted into.
+  const shell = shellFor(process.platform);
+  const resume = adapterById(root.source)?.resumeCommand?.({ nativeId: root.nativeId, cwd: root.cwd ?? undefined, filePath: root.filePath, shell });
+  const resumeLabel = `${root.id === s.id ? "Copy resume command" : "Copy the parent session's resume command"}${shell === "powershell" ? " (PowerShell)" : ""}`;
 
   const kinds = parseTimelineKinds(query.kinds);
   const at = nonNegativeInt(query.at);
@@ -248,7 +252,7 @@ export default async function SessionPage({ params, searchParams }: { params: Pr
           {resume && (
             <span className="title-row">
               {root.id !== s.id && <span className="muted">Resume via parent session</span>}
-              <CopyCommand command={resume} label={root.id === s.id ? "Copy resume command" : "Copy the parent session's resume command"} />
+              <CopyCommand command={resume} label={resumeLabel} />
             </span>
           )}
           {s.total.toolCalls > 0 && <GourceLinks params={{ session: s.id }} />}

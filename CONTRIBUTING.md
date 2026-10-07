@@ -23,6 +23,8 @@ pnpm check          # addon + typecheck + tests; run before every PR
 
 It builds from source directly when `AGENT_MONITOR_BUILD_FROM_SOURCE=1` is set, or when a previous cargo build exists in `native/search/target` (so once you have built the addon yourself, your Rust changes are always used). `AGENT_MONITOR_BUILD_FROM_SOURCE=0` forces the download. CI always builds from source.
 
+The addon cannot be replaced while a process has it loaded (`pnpm dev`, `pnpm start`, `pnpm demo`, `pnpm watch`); `pnpm build:native` then stops and asks you to stop that server first.
+
 ## Architecture
 
 The data flow is: tool logs → adapter → normalized session → SQLite → Next.js UI / CLI, with a gzip archive of every log and a Rust/tantivy full-text index on the side. See [README → How it works](README.md#how-it-works) and the layout notes in [CLAUDE.md](CLAUDE.md):
@@ -36,7 +38,7 @@ The data flow is: tool logs → adapter → normalized session → SQLite → Ne
 
 ## Adding an agent
 
-1. Create `src/adapters/<tool>.ts` that implements `Adapter` (`roots`, `match`, `parse`, optionally `resumeCommand`). Adapters are pure (`parse(path, content)`). Parse leniently: skip lines you don't understand, and expect the last line to be half-written while the tool is running.
+1. Create `src/adapters/<tool>.ts` that implements `Adapter` (`roots`, `match`, `parser`, optionally `resumeCommand`). A parser is fed one line at a time (`push`) and answers with the session so far (`result`), so a growing log only costs its new lines; `jsonParser` does that for JSONL formats and `parseLog` derives the whole-file parse. Parse leniently: skip lines you don't understand, expect the last line to be half-written while the tool is running, and never change an event `result()` already returned.
 2. Register it in `src/adapters/index.ts`. Its color in the charts comes from its position in that list.
 3. Add a small synthetic fixture under `test/fixtures/<tool>/` and tests in `test/adapters.test.ts`.
 

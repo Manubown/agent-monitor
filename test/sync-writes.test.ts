@@ -21,21 +21,32 @@ function treeAdapter(dir: string, onParse?: (events: AgentEvent[]) => AgentEvent
     label: "Fake",
     roots: () => [dir],
     match: (p) => p.endsWith(".log"),
-    parse: (_p, content) => {
-      const [header, ...rest] = content.split("\n").filter(Boolean);
-      if (!header) return null;
-      const h = JSON.parse(header) as { id: string; cwd?: string; parent?: string; ts?: number };
-      const at = h.ts ?? 1000;
-      const events: AgentEvent[] = rest.map((text, i) => ({ ts: at + i, kind: "user", text }));
+    parser: () => {
+      let h: { id: string; cwd?: string; parent?: string; ts?: number } | undefined;
+      let at = 1000;
+      const events: AgentEvent[] = [];
       return {
-        source: "fake",
-        nativeId: h.id,
-        parentNativeId: h.parent,
-        cwd: h.cwd,
-        startedAt: at,
-        endedAt: at + rest.length,
-        events: onParse ? onParse(events) : events,
-        usage: [],
+        push: (line) => {
+          if (!line) return false;
+          if (h === undefined) {
+            h = JSON.parse(line) as { id: string; cwd?: string; parent?: string; ts?: number };
+            at = h.ts ?? 1000;
+          } else events.push({ ts: at + events.length, kind: "user", text: line });
+          return true;
+        },
+        result: () =>
+          h === undefined
+            ? null
+            : {
+                source: "fake",
+                nativeId: h.id,
+                parentNativeId: h.parent,
+                cwd: h.cwd,
+                startedAt: at,
+                endedAt: at + events.length,
+                events: onParse ? onParse(events) : events,
+                usage: [],
+              },
       };
     },
   };
@@ -212,16 +223,20 @@ describe("sync writes", () => {
     reads.clear();
     docs.length = 0;
     await sync({ adapter: counting, index });
-    const base = reads.get("one")!;
-    expect(Object.fromEntries(reads)).toEqual({ one: base, two: base, three: base + 1 });
+    // Only the appended event is hashed, tagged, clipped and indexed; the stored ones are not read at all.
+    expect([...reads.keys()]).toEqual(["three"]);
     expect(docs.map((d) => d.seq)).toEqual([2]);
     expect(sessionEvents(db, "fake:a").map((e) => e.toolInput!.length <= 6_000)).toEqual([true, true, true]);
 
-    // A directory change re-indexes every event, so every one is clipped again.
+    // A rewritten first line (the directory changed) is not a log that only grew: it is read and indexed whole.
     put("a.log", log({ id: "a", cwd: "/elsewhere" }, "one", "two", "three"));
     reads.clear();
+    docs.length = 0;
     await sync({ adapter: counting, index });
-    expect(Object.fromEntries(reads)).toEqual({ one: base + 1, two: base + 1, three: base + 1 });
+    const base = reads.get("one") ?? 0;
+    expect(base).toBeGreaterThan(0);
+    expect(Object.fromEntries(reads)).toEqual({ one: base, two: base, three: base });
+    expect(docs.map((d) => d.seq)).toEqual([-1, 0, 1, 2]);
   });
 
   it("retries an archived-only log whose write failed for a passing reason", async () => {
@@ -230,12 +245,18 @@ describe("sync writes", () => {
     const base = treeAdapter(live);
     const adapter: Adapter = {
       ...base,
-      parse: (p, content) => {
-        const s = base.parse(p, content);
-        if (s?.nativeId !== "gone") return s;
-        parses++;
-        // NaN violates NOT NULL in SQLite: the write fails although the parse succeeded.
-        return { ...s, startedAt: writeFails ? Number.NaN : 1000 };
+      parser: (p) => {
+        const inner = base.parser(p);
+        return {
+          push: (line) => inner.push(line),
+          result: () => {
+            const s = inner.result();
+            if (s?.nativeId !== "gone") return s;
+            parses++;
+            // NaN violates NOT NULL in SQLite: the write fails although the parse succeeded.
+            return { ...s, startedAt: writeFails ? Number.NaN : 1000 };
+          },
+        };
       },
     };
     // One live log so the database knows files (otherwise every sync lists the archive), and one only archived.

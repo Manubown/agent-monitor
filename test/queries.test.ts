@@ -3,6 +3,7 @@ import { csvField, toCsv } from "../app/api/export/csv";
 import { claudeCodeAdapter } from "../src/adapters/claude-code";
 import { codexAdapter } from "../src/adapters/codex";
 import { ompAdapter } from "../src/adapters/omp";
+import { shellFor } from "../src/core/adapter";
 import { type Db, openDb } from "../src/store/db";
 import {
   ACTIVE_WINDOW_MS,
@@ -310,8 +311,21 @@ describe("parent cycles", () => {
 });
 
 describe("resume commands", () => {
+  const posix = shellFor("linux");
+  const powershell = shellFor("win32");
+
+  it("renders for the shell of the machine the dashboard runs on", () => {
+    expect(powershell).toBe("powershell");
+    expect(posix).toBe("posix");
+    expect(shellFor("darwin")).toBe("posix");
+  });
+
   it("builds each tool's resume command with POSIX quoting", () => {
     expect(claudeCodeAdapter.resumeCommand?.({ nativeId: "abc-123", cwd: "/home/me/My Project", filePath: "/x.jsonl" })).toBe(
+      "cd '/home/me/My Project' && claude --resume abc-123",
+    );
+    // POSIX is the default; asking for it explicitly changes nothing.
+    expect(claudeCodeAdapter.resumeCommand?.({ nativeId: "abc-123", cwd: "/home/me/My Project", filePath: "/x.jsonl", shell: posix })).toBe(
       "cd '/home/me/My Project' && claude --resume abc-123",
     );
     expect(ompAdapter.resumeCommand?.({ nativeId: "id1", cwd: "/w/it's", filePath: "/home/me/.omp/agent/sessions/-w/2026_id1.jsonl" })).toBe(
@@ -324,6 +338,49 @@ describe("resume commands", () => {
     expect(codexAdapter.resumeCommand?.({ nativeId: "rollout-2026-10-01T12-00-00-0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b", filePath: "/r.jsonl" })).toBe(
       "codex resume 0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
     );
+  });
+
+  it("builds each tool's resume command with PowerShell quoting", () => {
+    expect(
+      claudeCodeAdapter.resumeCommand?.({ nativeId: "abc-123", cwd: "C:\\Users\\me\\My Project", filePath: "C:\\x.jsonl", shell: powershell }),
+    ).toBe("Set-Location -LiteralPath 'C:\\Users\\me\\My Project' -ErrorAction Stop; claude --resume abc-123");
+    // A single quote doubles inside PowerShell's single quotes; a backslash path needs no quoting at all.
+    expect(
+      ompAdapter.resumeCommand?.({
+        nativeId: "id1",
+        cwd: "C:\\w\\it's",
+        filePath: "C:\\Users\\me\\.omp\\agent\\sessions\\-w\\2026_id1.jsonl",
+        shell: powershell,
+      }),
+    ).toBe(
+      "Set-Location -LiteralPath 'C:\\w\\it''s' -ErrorAction Stop; omp --resume C:\\Users\\me\\.omp\\agent\\sessions\\-w\\2026_id1.jsonl",
+    );
+    // PowerShell reads ‘ ’ ‚ ‛ as single quotes too, so they double as well: `Bob’s` would otherwise end the
+    // string and have the rest of the directory name parsed as code.
+    expect(
+      claudeCodeAdapter.resumeCommand?.({ nativeId: "abc", cwd: "C:\\Users\\me\\Bob\u2019s Projects", filePath: "C:\\x.jsonl", shell: powershell }),
+    ).toBe("Set-Location -LiteralPath 'C:\\Users\\me\\Bob\u2019\u2019s Projects' -ErrorAction Stop; claude --resume abc");
+    expect(
+      claudeCodeAdapter.resumeCommand?.({ nativeId: "abc", cwd: "C:\\x\u2018\u201a\u201b; calc; \u2018", filePath: "C:\\x.jsonl", shell: powershell }),
+    ).toBe("Set-Location -LiteralPath 'C:\\x\u2018\u2018\u201a\u201a\u201b\u201b; calc; \u2018\u2018' -ErrorAction Stop; claude --resume abc");
+    // Argument-mode syntax ($ expansion, the statement separator) stays literal because it is quoted.
+    expect(claudeCodeAdapter.resumeCommand?.({ nativeId: "abc", cwd: "C:\\dev\\$env; rm x", filePath: "C:\\x.jsonl", shell: powershell })).toBe(
+      "Set-Location -LiteralPath 'C:\\dev\\$env; rm x' -ErrorAction Stop; claude --resume abc",
+    );
+    expect(
+      codexAdapter.resumeCommand?.({ nativeId: "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b", cwd: "C:\\w", filePath: "C:\\r.jsonl", shell: powershell }),
+    ).toBe("Set-Location -LiteralPath C:\\w -ErrorAction Stop; codex resume 0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b");
+    // Without a cwd there is nothing to change into.
+    expect(claudeCodeAdapter.resumeCommand?.({ nativeId: "x", filePath: "C:\\x.jsonl", shell: powershell })).toBe("claude --resume x");
+    // A log without session_meta: the id is the uuid suffix of the rollout file name.
+    expect(
+      codexAdapter.resumeCommand?.({
+        nativeId: "rollout-2026-10-01T12-00-00-0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+        cwd: "C:\\w",
+        filePath: "C:\\r.jsonl",
+        shell: powershell,
+      }),
+    ).toBe("Set-Location -LiteralPath C:\\w -ErrorAction Stop; codex resume 0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b");
   });
 
   it("returns nothing for subagents", () => {

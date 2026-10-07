@@ -32,9 +32,25 @@ export default async function ProjectMapPage({ searchParams }: { searchParams: P
   const selected = first(params.file);
   const detail = selected ? projectFile(db, cwd, f, selected) : null;
 
-  const state = { range: f.range, source: f.source, q: f.q, tag: f.tag, dir: dir.path || undefined, color: mode === "ratio" ? undefined : mode, file: selected };
+  const state = {
+    range: f.range,
+    source: f.source,
+    q: f.q,
+    tag: f.tag,
+    from: f.days?.from,
+    to: f.days?.to,
+    dir: dir.path || undefined,
+    color: mode === "ratio" ? undefined : mode,
+    file: selected,
+  };
   const href = (changes: Record<string, string | undefined>) => projectMapHref(cwd, { ...state, ...changes });
-  const filters = { range: f.range, source: f.source, q: f.q, tag: f.tag };
+  const filters = { range: f.range, source: f.source, q: f.q, tag: f.tag, from: f.days?.from, to: f.days?.to };
+  /** Another page under the same filters; the custom window travels with them. */
+  const elsewhere = (path: string, extra: Record<string, string | undefined> = {}) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries({ ...filters, ...extra })) if (v) qs.set(k, v);
+    return `${path}?${qs}`;
+  };
   const sources = [...new Set(map.files.flatMap((x) => Object.keys(x.sources)))].sort();
   const changed = map.files.filter((x) => x.changes > 0).length;
   const prefix = dir.path ? joinPath(dir.path, "") : "";
@@ -44,12 +60,12 @@ export default async function ProjectMapPage({ searchParams }: { searchParams: P
     <>
       <div className="page-head">
         <div className="crumbs">
-          <Link href={`/projects?${new URLSearchParams({ range: f.range })}`}>Projects</Link>
+          <Link href={elsewhere("/projects")}>Projects</Link>
         </div>
         <div className="page-head-row">
           <h1 title={cwd}>{project(cwd)}</h1>
           <GourceLinks params={{ project: cwd, ...filters }} />
-          <Link className="muted" href={`/sessions?${new URLSearchParams({ project: cwd, range: f.range })}`}>
+          <Link className="muted" href={elsewhere("/sessions", { project: cwd })}>
             Sessions →
           </Link>
         </div>
@@ -72,8 +88,8 @@ export default async function ProjectMapPage({ searchParams }: { searchParams: P
         <section className="card">
           <Empty>
             No file activity in this project for these filters.{" "}
-            {f.range !== "all" && (
-              <Link href={href({ range: "all", dir: undefined, file: undefined })} scroll={false}>
+            {(f.range !== "all" || f.days) && (
+              <Link href={href({ range: "all", from: undefined, to: undefined, dir: undefined, file: undefined })} scroll={false}>
                 Show all time
               </Link>
             )}

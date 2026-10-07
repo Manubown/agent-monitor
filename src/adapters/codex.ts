@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { type Adapter, arr, homeDir, jsonLines, num, obj, shellCommand, str, stringifyInput, titleFrom, toMs } from "../core/adapter";
+import { type Adapter, arr, homeDir, jsonParser, type LogParser, num, obj, shellCommand, str, stringifyInput, titleFrom, toMs } from "../core/adapter";
 import { COMPACTION_TEXT, isCompactionMarker } from "../core/compaction";
 import type { AgentEvent, ParsedSession, TokenUsage, UsageRecord } from "../core/types";
 
@@ -34,12 +34,12 @@ export const codexAdapter: Adapter = {
     return [path.join(home, "sessions"), path.join(home, "archived_sessions")];
   },
   match: (filePath) => path.basename(filePath).startsWith("rollout-") && filePath.endsWith(".jsonl"),
-  parse: parseCodex,
+  parser: codexParser,
   resumeCommand: (s) => {
     if (s.parentNativeId) return undefined;
     // nativeId is the session_meta id; logs without one fall back to the file name, whose suffix is the id.
     const id = s.nativeId.startsWith("rollout-") ? UUID_SUFFIX.exec(s.nativeId)?.[1] : s.nativeId;
-    return id ? shellCommand(s.cwd, "codex", "resume", id) : undefined;
+    return id ? shellCommand(s, "codex", "resume", id) : undefined;
   },
 };
 
@@ -144,7 +144,7 @@ function envelope(line: Record<string, unknown>, first: boolean): { type: unknow
 
 const ENV_CWD = /<cwd>([^<]+)<\/cwd>/;
 
-export function parseCodex(filePath: string, content: string): ParsedSession | null {
+export function codexParser(filePath: string): LogParser {
   let nativeId: string | undefined;
   let parentNativeId: string | undefined;
   let firstPrompt: number | undefined;
@@ -168,12 +168,14 @@ export function parseCodex(filePath: string, content: string): ParsedSession | n
   /** JSON lines read, and how many of them were in a known shape. */
   let lines = 0;
   let known = 0;
+  /** The first prompt, kept here so a title needs no scan over the events. */
+  let firstUser: string | undefined;
 
-  for (const raw of jsonLines(content)) {
+  const read = (raw: Record<string, unknown>): void => {
     const line = envelope(raw, lines++ === 0);
     if (!line) {
       if (raw.record_type !== undefined) known++;
-      continue;
+      return;
     }
     known++;
     // Legacy lines carry no timestamp: they keep the meta line's, in file order.
@@ -185,7 +187,7 @@ export function parseCodex(filePath: string, content: string): ParsedSession | n
       // A fork's rollout replays its parent's lines, the parent's session_meta included.
       if (nativeId && str(p.id) && str(p.id) !== nativeId) {
         replayed = true;
-        continue;
+        return;
       }
       nativeId = str(p.id) ?? nativeId;
       cwd = str(p.cwd) ?? cwd;
@@ -212,6 +214,7 @@ export function parseCodex(filePath: string, content: string): ParsedSession | n
             if (injected && !cwd) cwd = ENV_CWD.exec(text)?.[1]?.trim() || undefined;
             // A subagent's dispatch prompt: its first prompt, or the last one when the parent's history was replayed first.
             if (!injected) {
+              firstUser ??= text;
               firstPrompt ??= events.length;
               lastPrompt = events.length;
             }
@@ -251,7 +254,7 @@ export function parseCodex(filePath: string, content: string): ParsedSession | n
     } else if (line.type === "token_usage_record") {
       // Codex >= 0.160: one line per model response, before the token_count carrying the running total.
       const u = obj(p.usage);
-      if (!u) continue;
+      if (!u) return;
       coveredByRecord = true;
       const record: UsageRecord = { ts, model, usage: usageBetween(NO_TOKENS, totalsOf(u)), requestId: `codex:${str(p.response_id) ?? payloadId(p)}` };
       // Should a token_count come first after all, the record replaces the request it already counted.
@@ -263,22 +266,22 @@ export function parseCodex(filePath: string, content: string): ParsedSession | n
     } else if (line.type === "event_msg") {
       if (p.type === "token_count") {
         const total = obj(obj(p.info)?.total_token_usage);
-        if (!total) continue;
+        if (!total) return;
         const current = totalsOf(total);
         const dInput = current.input - previous.input;
         const dOutput = current.output - previous.output;
         if (dInput < 0 || dOutput < 0) {
           // Totals reset (e.g. history was rewritten); restart the baseline.
           previous = current;
-          continue;
+          return;
         }
-        if (dInput === 0 && dOutput === 0) continue;
+        if (dInput === 0 && dOutput === 0) return;
         const between = usageBetween(previous, current);
         previous = current;
         // token_usage_record lines already counted the requests since the last total.
         if (coveredByRecord) {
           coveredByRecord = false;
-          continue;
+          return;
         }
         lastCounted = {
           ts,
@@ -297,24 +300,27 @@ export function parseCodex(filePath: string, content: string): ParsedSession | n
         events.push({ ts, kind: "system", text: `Turn aborted${str(p.reason) ? `: ${str(p.reason)}` : ""}` });
       }
     }
-  }
-
-  // Lines, but none Codex wrote: a format this adapter does not know. Sync reports the error instead of storing nothing.
-  if (lines > 0 && known === 0) throw new Error("Unrecognized Codex rollout format: no line has a known shape");
-  if (!nativeId && events.length === 0 && usage.length === 0) return null;
-  const firstUser = events.find((e) => e.kind === "user")?.text;
-  return {
-    source: "codex",
-    nativeId: nativeId ?? path.basename(filePath, ".jsonl"),
-    parentNativeId,
-    dispatchIndex: parentNativeId ? (replayed ? lastPrompt : firstPrompt) : undefined,
-    title: titleFrom(firstUser),
-    cwd,
-    gitBranch,
-    agentVersion,
-    startedAt: startedAt ?? events[0]?.ts ?? lastTs,
-    endedAt: lastTs,
-    events,
-    usage,
   };
+
+  const result = (): ParsedSession | null => {
+    // Lines, but none Codex wrote: a format this adapter does not know. Sync reports the error instead of storing nothing.
+    if (lines > 0 && known === 0) throw new Error("Unrecognized Codex rollout format: no line has a known shape");
+    if (!nativeId && events.length === 0 && usage.length === 0) return null;
+    return {
+      source: "codex",
+      nativeId: nativeId ?? path.basename(filePath, ".jsonl"),
+      parentNativeId,
+      dispatchIndex: parentNativeId ? (replayed ? lastPrompt : firstPrompt) : undefined,
+      title: titleFrom(firstUser),
+      cwd,
+      gitBranch,
+      agentVersion,
+      startedAt: startedAt ?? events[0]?.ts ?? lastTs,
+      endedAt: lastTs,
+      events,
+      usage,
+    };
+  };
+
+  return jsonParser(read, result);
 }

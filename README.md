@@ -121,7 +121,7 @@ Press `Ctrl K` / `⌘K` or `/` to search every prompt, reply, tool call and resu
 
 ![Activity heatmap: calendar and hour-of-day grid](docs/screenshots/heatmap.png)
 
-- **Overview**: active sessions; cost, tokens, requests, tool calls and cache hit rate; cost and tokens per day by tool; an **activity heatmap** (calendar plus weekday × hour, by events, cost or sessions); models; projects. Every number follows one filter row.
+- **Overview**: active sessions; the latest sessions as cards; cost, tokens, requests, tool calls and cache hit rate; cost and tokens per day by tool, where clicking a day lists what the agents did that day; an **activity heatmap** (calendar plus weekday × hour, by events, cost or sessions); models; projects. Every number follows one filter row, and "Customize" arranges, resizes and hides the cards.
 - **Automatic tags** computed locally from what a session did, with the reason as a tooltip: languages, `tests`, `build`, `deps`, `git`, `web`, `subagents`, `refactor`, `errors`, `long`, `research`, `loop`. Add your own `#tags` too.
 - **Usage windows**: Claude requests grouped into the 5-hour windows that subscription limits reset on, with burn rate and a projection.
 - **Accurate usage**: requests copied into forked or resumed sessions (Claude Code `/branch`, Codex forks) are counted once.
@@ -187,19 +187,19 @@ Add or override prices in `~/.config/agent-monitor/pricing.json` (USD per millio
 
 ```
  tool logs ──► adapter (one per tool) ──► normalized session ──► SQLite ──► Next.js UI / CLI
-     │           parse(file) → ParsedSession     events + usage     │ src/store/*
+     │           parser(file) → ParsedSession    events + usage     │ src/store/*
      └──► archive (gzip copy)                                      └──► search index (Rust, tantivy)
 ```
 
 - **Adapters** (`src/adapters/*`) turn one log file into the normalized schema in `src/core/types.ts`. Storage and UI never see a tool's own format.
-- **Sync** (`src/ingest/sync.ts`) re-parses only files whose size or mtime changed, and appends only new events when a running agent extends its log.
+- **Sync** (`src/ingest/sync.ts`) re-parses only files whose size or mtime changed, and a log a running agent is still writing is read from where the last sync stopped: only its new bytes are parsed, hashed, tagged, archived and stored.
 - **The database is a cache.** Delete it any time; it is rebuilt from the live logs plus the archive. Schema changes do exactly that.
 - **Analysis runs at read time** (`src/store/*`, `src/core/*`): activity and resources, turns, compactions, loops, flame layout, project trees, error categories. A new release improves old sessions too.
 - **Truncation**: event text is cut at 20,000 characters and tool output at 6,000. The full log is linked on every session page and kept in the archive.
 
 ## Adding a tool
 
-1. Create `src/adapters/<tool>.ts` implementing `Adapter` (`roots`, `match`, `parse`, optionally `resumeCommand`). Parse leniently: skip lines you don't understand, and expect the last line to be half-written while the tool runs.
+1. Create `src/adapters/<tool>.ts` implementing `Adapter` (`roots`, `match`, `parser`, optionally `resumeCommand`). A parser takes one line at a time (`push`) and returns the session so far (`result`); `jsonParser` covers JSONL formats. Parse leniently: skip lines you don't understand, expect the last line to be half-written while the tool runs, and never change an event `result()` already returned.
 2. Register it in `src/adapters/index.ts`. Its chart color comes from its position in that list.
 3. Add a small **synthetic** fixture under `test/fixtures/<tool>/` and tests in `test/adapters.test.ts`. Never commit real session logs.
 

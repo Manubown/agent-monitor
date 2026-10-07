@@ -1,0 +1,126 @@
+/* ---------- modular dashboard ----------
+ * A 12-column grid of widget cards. `--dash-w` is the slot's column span and `--dash-h` the body height its preset
+ * buys: a chart is drawn exactly that tall, a table takes it as a maximum and scrolls inside the card, so a long
+ * list is never cut off without a scrollbar to say so. Cards keep their own height (`align-items: start`), so no
+ * widget is stretched to match its neighbour.
+ *
+ * Narrow screens: below 1100 px the thin spans widen (3 and 4 become half, 8 becomes full), below 860 px every card
+ * is full width. Both rules are attribute selectors, which outrank the `--dash-w` span without !important.
+ */
+
+.dash-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 20px;
+  align-items: start;
+}
+
+.dash-item {
+  grid-column: span var(--dash-w);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Wide tables must scroll inside the card rather than stretch the column. */
+.dash-item > * {
+  min-width: 0;
+}
+
+/* A table taller than the slot's height scrolls in place; the card head stays visible above it. */
+.dash-item .table-wrap {
+  max-block-size: var(--dash-h, none);
+  overflow: auto;
+}
+
+@media (max-width: 1100px) {
+  .dash-item[data-w="3"],
+  .dash-item[data-w="4"] {
+    grid-column: span 6;
+  }
+
+  .dash-item[data-w="8"] {
+    grid-column: span 12;
+  }
+}
+
+@media (max-width: 860px) {
+  .dash-item[data-w] {
+    grid-column: span 12;
+  }
+}
+
+/* ---------- customize ---------- */
+
+.dash-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.dash-controls,
+.dash-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.dash-add {
+  flex: 1;
+}
+
+.dash-ctl-name {
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+/* Width and height presets sit together as one set of keys. */
+.dash-ctl-set {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.dash-ctl {
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.dash-ctl:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.dash-ctl:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.dash-ctl[aria-pressed="true"] {
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.dash-ctl:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The end of a card's controls: hiding is the one destructive thing there, so it sits apart. */
+.dash-ctl-end {
+  margin-left: auto;
+}
+
+:root[data-motion="on"] .dash-ctl {
+  transition: background-color 120ms steps(2);
+}

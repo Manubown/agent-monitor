@@ -1,7 +1,10 @@
 "use client";
 
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
 import { integer, tokens, usd } from "../lib/format";
+import { columnForKey } from "./chart/nav";
 
 export interface ChartSeries {
   key: string;
@@ -33,6 +36,11 @@ interface Props {
   notes?: string[][];
   /** Optional boundary markers; the plot gains a strip above it for their labels. */
   markers?: ChartMarker[];
+  /**
+   * Optional link per column: clicking the column or pressing Enter on it opens the link, and the table view links
+   * its rows. Columns without one stay inert, so a partly linkable chart is fine.
+   */
+  hrefs?: (string | undefined)[];
   height?: number;
   ariaLabel: string;
 }
@@ -58,8 +66,9 @@ function niceScale(max: number, count = 4): { top: number; step: number } {
 /** Nearest whole number of cells, in px. */
 const snap = (px: number) => Math.round(px / CELL) * CELL;
 
-export function StackedBarChart({ labels, ticks, series, format, notes, markers = [], height = 220, ariaLabel }: Props) {
+export function StackedBarChart({ labels, ticks, series, format, notes, markers = [], hrefs, height = 220, ariaLabel }: Props) {
   const ref = useRef<HTMLDivElement>(null);
+  const router = useRouter();
   const [width, setWidth] = useState(0);
   const [active, setActive] = useState<number | null>(null);
   const fmt = formatters[format];
@@ -88,8 +97,43 @@ export function StackedBarChart({ labels, ticks, series, format, notes, markers 
   const y = (v: number) => marginTop + plotH - (v / top) * plotH;
   const tickEvery = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(plotW / 64))));
   const axisTicks = Array.from({ length: Math.round(top / step) + 1 }, (_, i) => i * step);
+  const linked = hrefs?.some(Boolean) ?? false;
+  // The component survives navigations that keep it mounted (a day link on the errors chart narrows its own page), so
+  // a selection from the longer previous axis must never reach the tooltip or the geometry below.
+  const shown = active !== null && active >= 0 && active < n ? active : null;
 
-  const tooltipLeft = active === null ? 0 : Math.min(Math.max(0, MARGIN.left + band * active + band / 2 - 80), Math.max(0, width - 180));
+  const tooltipLeft = shown === null ? 0 : Math.min(Math.max(0, MARGIN.left + band * shown + band / 2 - 80), Math.max(0, width - 180));
+  // One line per column for the live region; it stays mounted so the first column is announced too.
+  const announcement =
+    shown === null
+      ? ""
+      : [
+          labels[shown],
+          ...(series.length > 1 ? [`${fmt(totals[shown])} total`] : []),
+          ...series.map((s) => `${s.label} ${fmt(s.values[shown] ?? 0)}`),
+          ...(notes?.[shown] ?? []),
+          ...(markerText.has(shown) ? [String(markerText.get(shown))] : []),
+        ].join(", ");
+
+  /** Plain left clicks navigate inside the app; modified clicks stay with the browser (new tab, download, …). */
+  const open = (e: React.MouseEvent, href: string) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    router.push(href);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const href = shown === null ? undefined : hrefs?.[shown];
+    if (href && (e.key === "Enter" || e.key === " ")) {
+      e.preventDefault();
+      router.push(href);
+      return;
+    }
+    const next = columnForKey(e.key, shown, n);
+    if (next === null) return;
+    e.preventDefault();
+    setActive(next);
+  };
 
   return (
     <div className="chart">
@@ -103,9 +147,24 @@ export function StackedBarChart({ labels, ticks, series, format, notes, markers 
           ))}
         </div>
       )}
-      <div ref={ref} style={{ height, position: "relative" }} onPointerLeave={() => setActive(null)}>
+      {/* One tab stop for the whole chart: the columns are read with the arrow keys, and a live region inside the plot
+          repeats what the tooltip shows. The drawing itself is hidden from assistive technology; its numbers are in
+          this label, that live region and the table view. */}
+      <div
+        ref={ref}
+        className="chart-plot"
+        style={{ height, position: "relative" }}
+        tabIndex={n ? 0 : -1}
+        role="group"
+        aria-label={`${ariaLabel}. ${n} ${n === 1 ? "column" : "columns"}; left and right arrow keys read them${linked ? ", Enter opens the selected one" : ""}.`}
+        onKeyDown={onKeyDown}
+        onBlur={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget)) setActive(null);
+        }}
+        onPointerLeave={() => setActive(null)}
+      >
         {width > 0 && (
-          <svg width={width} height={height} role="img" aria-label={ariaLabel}>
+          <svg width={width} height={height} aria-hidden="true">
             <defs>
               {/* Mask luminance, not a theme color: white cells show the bars, the 1 px gaps hide them. */}
               <pattern id={`${maskId}-cells`} width={columns ? CELL : 1} height={CELL} y={baseline % CELL} patternUnits="userSpaceOnUse">
@@ -123,7 +182,7 @@ export function StackedBarChart({ labels, ticks, series, format, notes, markers 
                 </text>
               </g>
             ))}
-            {labels.map((label, i) => {
+            {labels.map((_, i) => {
               const x = columns ? snap(MARGIN.left + band * i + (band - barW) / 2) : MARGIN.left + band * i + (band - barW) / 2;
               const w = columns ? snap(barW) : barW;
               const visible = series.filter((s) => (s.values[i] ?? 0) > 0);
@@ -139,23 +198,16 @@ export function StackedBarChart({ labels, ticks, series, format, notes, markers 
                 prev = end;
                 return seg;
               });
-              return (
-                <g
-                  key={label}
-                  className="chart-col"
-                  tabIndex={0}
-                  aria-label={`${label}: ${fmt(totals[i])}${markerText.has(i) ? `, ${markerText.get(i)}` : ""}`}
-                  onPointerEnter={() => setActive(i)}
-                  onFocus={() => setActive(i)}
-                  onBlur={() => setActive(null)}
-                >
+              const href = hrefs?.[i];
+              const column = (
+                <>
                   <rect
                     className="chart-hit"
                     x={MARGIN.left + band * i}
                     y={marginTop}
                     width={band}
                     height={plotH}
-                    fill={active === i ? "var(--hover)" : "transparent"}
+                    fill={shown === i ? "var(--hover)" : "transparent"}
                   />
                   <g mask={`url(#${maskId})`}>
                     {segments.map((seg) => seg.h > 0 && <rect key={seg.key} x={x} y={seg.y} width={w} height={seg.h} fill={seg.color} />)}
@@ -165,14 +217,26 @@ export function StackedBarChart({ labels, ticks, series, format, notes, markers 
                       {(ticks ?? labels)[i]}
                     </text>
                   )}
+                </>
+              );
+              // Index keys: labels repeat ("Mon 6 Oct" one year apart, "Request 1" per agent).
+              const cls = `chart-col${shown === i ? " chart-col-active" : ""}`;
+              return href ? (
+                // A real link, so the browser's own "open in new tab" works; tabIndex -1 keeps the single tab stop.
+                <a key={i} className={`${cls} chart-link`} href={href} tabIndex={-1} onPointerEnter={() => setActive(i)} onClick={(e) => open(e, href)}>
+                  {column}
+                </a>
+              ) : (
+                <g key={i} className={cls} onPointerEnter={() => setActive(i)}>
+                  {column}
                 </g>
               );
             })}
-            {markers.map((m) => {
+            {markers.map((m, i) => {
               const mx = Math.round(MARGIN.left + band * m.index) + 0.5;
               const right = mx > width - 64;
               return (
-                <g key={`${m.index}-${m.label}`} pointerEvents="none" aria-hidden="true">
+                <g key={i} pointerEvents="none">
                   <line
                     x1={mx}
                     x2={mx}
@@ -191,30 +255,34 @@ export function StackedBarChart({ labels, ticks, series, format, notes, markers 
             })}
           </svg>
         )}
-        {active !== null && (
-          <div className="tooltip" style={{ left: tooltipLeft, top: Math.max(0, y(totals[active]) - 12) }} role="status">
-            <div className="tooltip-title">{labels[active]}</div>
+        {shown !== null && (
+          <div className="tooltip" style={{ left: tooltipLeft, top: Math.max(0, y(totals[shown]) - 12) }}>
+            <div className="tooltip-title">{labels[shown]}</div>
             {series.length > 1 && (
               <div className="tooltip-row">
-                <span className="tooltip-value">{fmt(totals[active])}</span>
+                <span className="tooltip-value">{fmt(totals[shown])}</span>
                 <span className="tooltip-name">total</span>
               </div>
             )}
             {series.map((s) => (
               <div className="tooltip-row" key={s.key}>
                 <span className="tooltip-key" style={{ background: s.color }} />
-                <span className="tooltip-value">{fmt(s.values[active] ?? 0)}</span>
+                <span className="tooltip-value">{fmt(s.values[shown] ?? 0)}</span>
                 <span className="tooltip-name">{s.label}</span>
               </div>
             ))}
-            {notes?.[active]?.map((line) => (
-              <div className="tooltip-name" key={line}>
+            {notes?.[shown]?.map((line, i) => (
+              <div className="tooltip-name" key={i}>
                 {line}
               </div>
             ))}
-            {markerText.has(active) && <div className="tooltip-name">{markerText.get(active)}</div>}
+            {markerText.has(shown) && <div className="tooltip-name">{markerText.get(shown)}</div>}
           </div>
         )}
+        {/* Mounted for as long as the chart is: a live region that only appears with its text is announced late or not at all. */}
+        <div className="chart-sr" role="status">
+          {announcement}
+        </div>
       </div>
       <details className="data-table">
         <summary>Show as table</summary>
@@ -232,20 +300,29 @@ export function StackedBarChart({ labels, ticks, series, format, notes, markers 
               </tr>
             </thead>
             <tbody>
-              {labels.map((label, i) => (
-                <tr key={label}>
-                  <td>
-                    {label}
-                    {markerText.has(i) && <span className="muted"> · {markerText.get(i)}</span>}
-                  </td>
-                  {series.map((s) => (
-                    <td key={s.key} className="num">
-                      {format === "usd" ? usd(s.values[i] ?? 0) : integer(s.values[i] ?? 0)}
+              {labels.map((label, i) => {
+                const href = hrefs?.[i];
+                return (
+                  <tr key={i}>
+                    <td>
+                      {href ? (
+                        <Link className="row-link" href={href}>
+                          {label}
+                        </Link>
+                      ) : (
+                        label
+                      )}
+                      {markerText.has(i) && <span className="muted"> · {markerText.get(i)}</span>}
                     </td>
-                  ))}
-                  {series.length > 1 && <td className="num">{format === "usd" ? usd(totals[i]) : integer(totals[i])}</td>}
-                </tr>
-              ))}
+                    {series.map((s) => (
+                      <td key={s.key} className="num">
+                        {format === "usd" ? usd(s.values[i] ?? 0) : integer(s.values[i] ?? 0)}
+                      </td>
+                    ))}
+                    {series.length > 1 && <td className="num">{format === "usd" ? usd(totals[i]) : integer(totals[i])}</td>}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

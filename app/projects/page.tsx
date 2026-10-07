@@ -7,7 +7,7 @@ import { projectMapHref } from "../components/projects/links";
 import { NoActivity } from "../components/NoActivity";
 import { sourceColor } from "../components/ui";
 import { ago, integer, project, tokens, usd } from "../lib/format";
-import { filtersFrom, RANGES, ready, type SearchParams } from "../lib/server";
+import { filtersFrom, queryOf, RANGES, ready, type SearchParams } from "../lib/server";
 import "../projects.css";
 
 export default async function ProjectsPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
@@ -16,12 +16,18 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
   const db = await ready();
   const rows = listProjects(db, f);
   const options = filterOptions(db);
-  const current = { range: f.range, source: f.source, project: f.cwd, q: f.q, tag: f.tag };
-  const filters = { range: f.range, source: f.source, q: f.q, tag: f.tag };
+  const current = queryOf(f);
+  const filters = { ...current, project: undefined };
   const projectsHref = (query: Record<string, string | undefined>) => {
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(query)) if (v) qs.set(k, v);
     return `/projects?${qs}`;
+  };
+  /** That project's sessions under the same filters (the window included). */
+  const sessionsHref = (cwd: string) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries({ ...current, project: cwd })) if (v) qs.set(k, v);
+    return `/sessions?${qs}`;
   };
 
   return (
@@ -46,9 +52,9 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
         <NoActivity
           db={db}
           subject="project activity"
-          range={f.range}
-          filtered={Boolean(f.source || f.cwd || f.q || f.tag)}
-          allTimeHref={projectsHref({ ...current, range: "all" })}
+          range={f.days ? "custom" : f.range}
+          filtered={Boolean(f.source || f.cwd || f.q || f.tag || f.days)}
+          allTimeHref={projectsHref({ ...current, range: "all", from: undefined, to: undefined })}
           clearHref={projectsHref({ range: "all" })}
         />
       ) : (
@@ -104,7 +110,7 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
                     <td className="num">{usd(p.cost)}</td>
                     <td className="num muted">{ago(p.lastActive)}</td>
                     <td>
-                      <Link className="muted" href={`/sessions?${new URLSearchParams({ project: p.cwd, range: f.range })}`}>
+                      <Link className="muted" href={sessionsHref(p.cwd)}>
                         Sessions →
                       </Link>
                     </td>

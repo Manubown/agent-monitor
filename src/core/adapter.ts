@@ -6,6 +6,31 @@ import type { ParsedSession } from "./types";
 export type Env = Record<string, string | undefined>;
 
 /**
+ * Reads one session log line by line. A log that only grew costs its new lines: sync keeps the parser of an active
+ * log and feeds it the bytes that were appended (see src/ingest/incremental.ts), so nothing before them is read,
+ * decoded or parsed again.
+ *
+ * Parsers are append-only: an event `result()` has already returned is never changed or removed by a later line.
+ * Everything a later line may still change (title, cwd, endedAt, dispatchIndex, and usage, which Claude Code
+ * deduplicates by message id and Codex replaces with its token_usage_record) lives outside `events`. A usage record
+ * is immutable once pushed, so a changed one is a new object in `usage`.
+ */
+export interface LogParser {
+  /**
+   * Feed one line, as written (without its "\n"; a trailing "\r" is fine). Returns whether it was a complete record
+   * the parser took. A line it did not take (blank, half-written, not an object) leaves the parser as it was, so a
+   * caller reading a log as it grows must offer that last line again once more bytes arrived.
+   */
+  push(line: string): boolean;
+  /**
+   * The session the lines so far hold, or null when they hold none. May be called after any line with more lines to
+   * follow, and stays cheap when called repeatedly. Throws when the lines are in a shape the adapter cannot read at
+   * all; sync reports that like a parse error.
+   */
+  result(): ParsedSession | null;
+}
+
+/**
  * An adapter teaches agent-monitor one tool's on-disk log format.
  *
  * To support a new agent CLI, implement this interface in `src/adapters/` and
@@ -21,11 +46,11 @@ export interface Adapter {
   /** Whether a file found under a root is a session log this adapter parses. */
   match(filePath: string): boolean;
   /**
-   * Parse one session log. Must be pure and tolerant: skip lines it does not
+   * A parser for one session log. Must be tolerant: skip lines it does not
    * understand (formats change between tool versions, and the last line may be
-   * half-written). Return null when the file holds no session.
+   * half-written). Its result is null when the file holds no session.
    */
-  parse(filePath: string, content: string): ParsedSession | null;
+  parser(filePath: string): LogParser;
   /**
    * Shell command that reopens a top-level session in its tool, if the tool can
    * resume sessions. Undefined for subagents (`parentNativeId` set): the UI
@@ -40,15 +65,46 @@ export interface ResumeTarget {
   /** The session's log file. */
   filePath: string;
   parentNativeId?: string;
+  /** Shell the command is pasted into. Defaults to POSIX so adapters stay platform-independent. */
+  shell?: ResumeShell;
 }
+
+/** The syntax a resume command is rendered in: `cd … && …`, or PowerShell's `Set-Location …; …` for cmd-less Windows. */
+export type ResumeShell = "posix" | "powershell";
+
+/** The shell of the machine the dashboard runs on; it is the user's own, so its platform decides. */
+export const shellFor = (platform: string): ResumeShell => (platform === "win32" ? "powershell" : "posix");
 
 /** Quote one argument for a POSIX shell; plain words stay unquoted. */
 export const shellQuote = (arg: string): string => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`);
 
-/** `cd <cwd> && <command…>` with every argument quoted; no `cd` when the directory is unknown. */
-export const shellCommand = (cwd: string | undefined, ...argv: string[]): string => {
-  const command = argv.map(shellQuote).join(" ");
-  return cwd ? `cd ${shellQuote(cwd)} && ${command}` : command;
+/** Every character PowerShell reads as a single quote: it closes a quoted string, and doubling it escapes it. */
+const PS_QUOTES = /['\u2018\u2019\u201a\u201b]/g;
+
+/**
+ * Quote one argument for PowerShell: a single-quoted string expands nothing and a doubled quote is a literal
+ * one, so a backslash path survives as written. The curly quotes `‘ ’ ‚ ‛` are quotes to PowerShell as well,
+ * so they are doubled too: a directory named `Bob’s Projects` would otherwise end the string and have the
+ * rest of its name parsed as code. Plain ASCII words stay unquoted; `@`, `,`, `$`, `#`, `{` and `%` are
+ * argument-mode syntax and are left out of the safe set, as is everything non-ASCII.
+ */
+export const powershellQuote = (arg: string): string =>
+  /^[\w+=:./\\-]+$/.test(arg) ? arg : `'${arg.replace(PS_QUOTES, (q) => q + q)}'`;
+
+/**
+ * `cd <cwd> && <command…>`, or `Set-Location -LiteralPath <cwd> -ErrorAction Stop; <command…>` for PowerShell,
+ * with every argument quoted for that shell; no directory change when the directory is unknown. A missing
+ * directory must not start the agent somewhere else, so both forms stop at the failed directory change:
+ * `&&` for POSIX, and `-ErrorAction Stop` for PowerShell, whose default is to carry on after the error.
+ */
+export const shellCommand = (target: Pick<ResumeTarget, "cwd" | "shell">, ...argv: string[]): string => {
+  const posix = target.shell !== "powershell";
+  const quote = posix ? shellQuote : powershellQuote;
+  const command = argv.map(quote).join(" ");
+  if (!target.cwd) return command;
+  return posix
+    ? `cd ${quote(target.cwd)} && ${command}`
+    : `Set-Location -LiteralPath ${quote(target.cwd)} -ErrorAction Stop; ${command}`;
 };
 
 export const homeDir = (env: Env): string => env.HOME || os.homedir();
@@ -56,17 +112,32 @@ export const homeDir = (env: Env): string => env.HOME || os.homedir();
 export const expandHome = (p: string, env: Env): string =>
   p.startsWith("~/") ? path.join(homeDir(env), p.slice(2)) : p;
 
-/** Parse a JSONL document, skipping blank and malformed lines. */
-export function* jsonLines(content: string): Generator<Record<string, unknown>> {
-  for (const line of content.split("\n")) {
-    if (!line.trim()) continue;
+/**
+ * A LogParser over JSON object lines: `line` sees every line that is one, in order. Blank lines, lines that are not
+ * a JSON object and half-written ones are skipped and reported as not taken, so a log being read as it grows offers
+ * its last line again once the rest of it arrived. An array line is never taken either: more elements may follow.
+ */
+export const jsonParser = (line: (record: Record<string, unknown>) => void, result: () => ParsedSession | null): LogParser => ({
+  push(text) {
+    if (!text.trim()) return false;
+    let value: unknown;
     try {
-      const value: unknown = JSON.parse(line);
-      if (value && typeof value === "object" && !Array.isArray(value)) yield value as Record<string, unknown>;
+      value = JSON.parse(text);
     } catch {
-      // Partially written or corrupt line; a later sync will pick it up once complete.
+      return false; // Partially written or corrupt line.
     }
-  }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    line(value as Record<string, unknown>);
+    return true;
+  },
+  result,
+});
+
+/** Parse a whole log with the adapter's parser: every line, a last one without its newline included. */
+export function parseLog(adapter: Adapter, filePath: string, content: string): ParsedSession | null {
+  const parser = adapter.parser(filePath);
+  for (const line of content.split("\n")) parser.push(line);
+  return parser.result();
 }
 
 /** Accept ISO strings, epoch ms, or epoch seconds. */

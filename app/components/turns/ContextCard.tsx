@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { ContextAgent } from "../../../src/store/turns";
 import { clock, tokens, usd } from "../../lib/format";
+import { sessionHref } from "../search/shared";
 import { type ChartMarker, StackedBarChart } from "../StackedBarChart";
 import "../../turns.css";
 
@@ -51,7 +52,13 @@ export function ContextCard({ agents }: { agents: ContextAgent[] }) {
           { key: "cacheWrite", label: "Cache write", color: "var(--series-2)", values: requests.map((u) => u.cacheWrite) },
           { key: "input", label: "Uncached input", color: "var(--series-3)", values: requests.map((u) => u.input) },
         ]}
-        notes={requests.map((u) => [`${tokens(u.output)} output · ${usd(u.cost)}${u.costSource === "estimated" ? " est." : ""}`, u.model])}
+        notes={requests.map((u) => [
+          `${tokens(u.output)} output · ${usd(u.cost)}${u.costSource === "estimated" ? " est." : ""}`,
+          u.model,
+          ...(u.prompt ? [`Prompt: ${u.prompt}`] : []),
+        ])}
+        // Opens the event the request followed, in the timeline of the agent that made it.
+        hrefs={requests.map((u) => (u.seq === null ? undefined : sessionHref(agent.id, u.seq)))}
         markers={markers}
         format="tokens"
         height={200}

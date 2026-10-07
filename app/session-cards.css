@@ -1,0 +1,149 @@
+/* ---------- session cards (overview) ----------
+ * The most recent sessions as one row of cards. The row never wraps and never scrolls sideways: the section is a
+ * query container, every ~250 px of width adds a column, and the cards that do not fit are dropped from the layout
+ * (`display: none` also takes them out of the tab order) instead of spilling onto a second row.
+ * The last tier is the most cards that can show, so keep it in step with `CARDS` in components/SessionCards.tsx.
+ */
+
+.session-cards-section {
+  container: session-cards / inline-size;
+}
+
+.session-cards {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.session-cards > .session-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+}
+
+/* One column per 230 px card plus the 14 px gap: n columns need 244n - 14 px, five of them at the full 1,232 px page.
+ * Every tier repeats both halves ("show the first K, hide from K + 1") with the same specificity as this base rule,
+ * so the widest tier that matches wins on source order; a plain `li` reset would lose to the hide rules below. */
+.session-cards > li:nth-child(n + 2) {
+  display: none;
+}
+
+@container session-cards (min-width: 474px) {
+  .session-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .session-cards > li:nth-child(-n + 2) {
+    display: flex;
+  }
+
+  .session-cards > li:nth-child(n + 3) {
+    display: none;
+  }
+}
+
+@container session-cards (min-width: 718px) {
+  .session-cards {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .session-cards > li:nth-child(-n + 3) {
+    display: flex;
+  }
+
+  .session-cards > li:nth-child(n + 4) {
+    display: none;
+  }
+}
+
+@container session-cards (min-width: 962px) {
+  .session-cards {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .session-cards > li:nth-child(-n + 4) {
+    display: flex;
+  }
+
+  .session-cards > li:nth-child(n + 5) {
+    display: none;
+  }
+}
+
+@container session-cards (min-width: 1206px) {
+  .session-cards {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .session-cards > li:nth-child(-n + 5) {
+    display: flex;
+  }
+
+  .session-cards > li:nth-child(n + 6) {
+    display: none;
+  }
+}
+
+.session-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* The dot has no content of its own, so it would be the one item flex could squash. */
+.session-card-head .pulse-dot {
+  flex: none;
+}
+
+.session-card-cost {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+/* Two lines of title in every card, so the lines below it stay level across the row. */
+.session-card-title {
+  font-size: 14px;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  min-height: 2.6em;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.session-card-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Tags sit on the card's floor; a card without them simply ends. */
+.session-card .tag-list {
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+/* Like the drill-down tiles: the pixel frame turns accent while the card is hovered or holds focus. */
+.session-cards > .session-card:hover,
+.session-cards > .session-card:has(.row-link:focus-visible) {
+  --bc: var(--accent);
+  background-color: var(--surface);
+  background-image: linear-gradient(var(--hover), var(--hover));
+}
+
+.session-cards > .session-card:hover .session-card-title {
+  text-decoration: underline;
+}
+
+/* Stepped micro-animation, only while Motion is on (the top-bar toggle sets <html data-motion>). */
+:root[data-motion="on"] .session-cards > .session-card {
+  transition: box-shadow 180ms steps(3);
+}

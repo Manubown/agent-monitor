@@ -62,6 +62,13 @@ export const shortDay = (day: string): string => {
   return new Date(y, m - 1, d).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 };
 
+/** A custom day window as shown in the filter bar and page notes: "6 Oct", "1 Oct – 6 Oct", "since 1 Oct", "until 6 Oct". */
+export const dayRangeLabel = (from?: string, to?: string): string => {
+  if (from && to) return from === to ? shortDay(from) : `${shortDay(from)} – ${shortDay(to)}`;
+  if (from) return `since ${shortDay(from)}`;
+  return to ? `until ${shortDay(to)}` : "";
+};
+
 /** Local calendar days from `first` to `last` inclusive, as YYYY-MM-DD. */
 export const dayRange = (first: string, last: string): string[] => {
   const days: string[] = [];

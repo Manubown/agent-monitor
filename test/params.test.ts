@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attachment, downloadName, first, nonNegativeInt, oneOf, oneOfList, paramsOf, positiveInt, slug } from "../app/lib/params";
+import { attachment, dayParam, downloadName, first, nonNegativeInt, oneOf, oneOfList, paramsOf, positiveInt, slug } from "../app/lib/params";
 
 describe("first", () => {
   it("takes the first of repeated values and treats empty as missing", () => {
@@ -69,6 +69,20 @@ describe("oneOf", () => {
     expect(oneOfList(ids, "7d")).toBe("7d");
     expect(oneOfList(ids, "constructor")).toBeUndefined();
     expect(oneOfList(ids, "")).toBeUndefined();
+  });
+});
+
+describe("dayParam", () => {
+  it("takes real calendar days only", () => {
+    expect(dayParam("2026-10-06")).toBe("2026-10-06");
+    expect(dayParam(["2026-10-06", "2026-10-07"])).toBe("2026-10-06");
+    expect(dayParam("2024-02-29")).toBe("2024-02-29");
+  });
+
+  it("is undefined for anything the UI never writes", () => {
+    for (const bad of ["2026-02-30", "2026-13-01", "2026-10-32", "2026-10-6", "20261006", "2026/10/06", "2026-10-06T12:00", "1759708800000", "", undefined]) {
+      expect(dayParam(bad), String(bad)).toBeUndefined();
+    }
   });
 });
 

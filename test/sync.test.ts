@@ -5,6 +5,7 @@ import { gunzipSync } from "node:zlib";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, Env } from "../src/core/adapter";
 import { fileOps } from "../src/core/activity";
+import type { AgentEvent } from "../src/core/types";
 import { archivePath, writeArchive } from "../src/ingest/archive";
 import { clipToolInput, syncAll } from "../src/ingest/sync";
 import { DEFAULT_PRICES } from "../src/core/pricing";
@@ -230,16 +231,19 @@ describe("archive and incremental sync", () => {
       label: "Fake",
       roots: () => [dir],
       match: (p) => p.endsWith(".log"),
-      parse: (p) => {
-        if (p.endsWith("b.log")) {
-          parses.b++;
-          throw new Error("unparseable");
-        }
-        parses.a++;
-        // NaN timestamps violate NOT NULL in SQLite: the write fails although the parse succeeded.
-        const ts = writeFails ? Number.NaN : 1;
-        return { source: "fake", nativeId: "a", startedAt: ts, endedAt: ts, events: [], usage: [] };
-      },
+      parser: (p) => ({
+        push: () => true,
+        result: () => {
+          if (p.endsWith("b.log")) {
+            parses.b++;
+            throw new Error("unparseable");
+          }
+          parses.a++;
+          // NaN timestamps violate NOT NULL in SQLite: the write fails although the parse succeeded.
+          const ts = writeFails ? Number.NaN : 1;
+          return { source: "fake", nativeId: "a", startedAt: ts, endedAt: ts, events: [], usage: [] };
+        },
+      }),
     };
     const sync = () => syncAll(ctx.db, { env: {}, adapters: [adapter], prices: DEFAULT_PRICES, archiveDir: path.join(dir, "archive") });
 
@@ -306,11 +310,19 @@ function lineAdapter(dir: string): Adapter {
     label: "Fake",
     roots: () => [dir],
     match: (p) => p.endsWith(".log"),
-    parse: (_p, content) => {
-      const [id, ...rest] = content.split("\n").filter(Boolean);
-      if (!id) return null;
-      const events = rest.map((text, i) => ({ ts: 1000 + i, kind: "user" as const, text }));
-      return { source: "fake", nativeId: id, cwd: "/work/fake", startedAt: 1000, endedAt: 1000 + rest.length, events, usage: [] };
+    parser: () => {
+      let id: string | undefined;
+      const events: AgentEvent[] = [];
+      return {
+        push: (line) => {
+          if (!line) return false;
+          if (id === undefined) id = line;
+          else events.push({ ts: 1000 + events.length, kind: "user", text: line });
+          return true;
+        },
+        result: () =>
+          id === undefined ? null : { source: "fake", nativeId: id, cwd: "/work/fake", startedAt: 1000, endedAt: 1000 + events.length, events, usage: [] },
+      };
     },
   };
 }
@@ -486,17 +498,20 @@ describe("clipped tool input", () => {
       label: "Fake",
       roots: () => [dir],
       match: (p) => p.endsWith(".log"),
-      parse: () => ({
-        source: "fake",
-        nativeId: "clip",
-        cwd: "/work",
-        startedAt: 1,
-        endedAt: 2,
-        events: [
-          { ts: 1, kind: "tool_call", toolName: "Write", toolCallId: "w", toolInput: write },
-          { ts: 2, kind: "tool_call", toolName: "apply_patch", toolCallId: "p", toolInput: JSON.stringify({ input: patch }) },
-        ],
-        usage: [],
+      parser: () => ({
+        push: () => true,
+        result: () => ({
+          source: "fake",
+          nativeId: "clip",
+          cwd: "/work",
+          startedAt: 1,
+          endedAt: 2,
+          events: [
+            { ts: 1, kind: "tool_call" as const, toolName: "Write", toolCallId: "w", toolInput: write },
+            { ts: 2, kind: "tool_call" as const, toolName: "apply_patch", toolCallId: "p", toolInput: JSON.stringify({ input: patch }) },
+          ],
+          usage: [],
+        }),
       }),
     };
     fs.writeFileSync(path.join(dir, "a.log"), "x");

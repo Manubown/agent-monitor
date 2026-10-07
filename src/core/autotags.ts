@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileOps, isWrite } from "./activity";
-import { detectLoops, loopReason } from "./loops";
+import { LoopScan, loopReason } from "./loops";
 import { isShellTool, shellCommand } from "./shell";
 import type { AgentEvent } from "./types";
 
@@ -226,110 +226,137 @@ const hoursMinutes = (ms: number): string => {
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
 };
 
-/** Every automatic tag that applies, sorted by tag. */
-export function deriveAutoTags(input: AutoTagInput): AutoTag[] {
-  const cwd = input.cwd ?? undefined;
-  const changed = new Set<string>();
-  const tests = new Tally();
-  const builds = new Tally();
-  const deps = new Tally();
-  const git = new Tally();
-  let moves = 0;
-  let lookups = 0;
-  let web = 0;
-  let subagents = 0;
-  let toolResults = 0;
-  let failures = 0;
-  let apiErrors = 0;
-  let active = 0;
-  let lastTs: number | undefined;
+/**
+ * Running state of one session's automatic tags, so a growing log only pays for its new events: events are added in
+ * timeline order and never taken back, and `tags()` may be called after any number of them. The working directory
+ * and branch are fixed, since they resolve relative paths and feed the `refactor` rule: a session whose own change
+ * needs a new scan.
+ */
+export class AutoTagScan {
+  private readonly cwd?: string;
+  private readonly gitBranch?: string | null;
+  private readonly changed = new Set<string>();
+  private readonly tests = new Tally();
+  private readonly builds = new Tally();
+  private readonly deps = new Tally();
+  private readonly git = new Tally();
+  private readonly loops: LoopScan;
+  private moves = 0;
+  private lookups = 0;
+  private web = 0;
+  private subagents = 0;
+  private toolResults = 0;
+  private failures = 0;
+  private apiErrors = 0;
+  private active = 0;
+  private lastTs: number | undefined;
 
-  for (const e of input.events) {
-    if (lastTs !== undefined) {
-      const gap = e.ts - lastTs;
-      if (gap > 0 && (gap <= IDLE_GAP_MS || e.kind === "tool_result")) active += gap;
-    }
-    lastTs = lastTs === undefined ? e.ts : Math.max(lastTs, e.ts);
-
-    if (e.kind === "error") {
-      if (!INTERRUPTED.test(e.text ?? "")) apiErrors++;
-      continue;
-    }
-    if (e.kind === "tool_result") {
-      toolResults++;
-      if (e.isError) failures++;
-      continue;
-    }
-    if (e.kind !== "tool_call") continue;
-
-    const name = (e.toolName ?? "").toLowerCase();
-    const args = parseArgs(e.toolInput);
-    const ops = fileOps(e.toolName, e.toolInput, cwd);
-    for (const op of ops) {
-      if (isWrite(op.op)) {
-        changed.add(op.to ?? op.path);
-        if (op.op === "move") moves++;
-      } else lookups++;
-    }
-    if (SEARCH_TOOLS.has(name) && !ops.length) lookups++;
-    const target = args?.path ?? args?.url;
-    if (WEB_TOOLS.has(name) || (name === "read" && typeof target === "string" && /^https?:\/\//.test(target))) web++;
-    if (SUBAGENT_TOOLS.has(name)) subagents += Array.isArray(args?.tasks) ? args.tasks.length : 1;
-
-    const commandLine = isShellTool(name) ? shellCommand(args) : undefined;
-    if (!commandLine) continue;
-    for (const w of commands(commandLine)) {
-      const t = testRun(w);
-      if (t) tests.add(t);
-      const b = buildRun(w);
-      if (b) builds.add(b);
-      const d = depsRun(w);
-      if (d) deps.add(d);
-      const g = gitRun(w);
-      if (g) git.add(g);
-      if (w[0] === "git" && positionals(w)[0] === "mv") moves++;
-      if (READ_COMMANDS.has(w[0]) || (w[0] === "sed" && w.includes("-n"))) lookups++;
-    }
+  constructor(input: Omit<AutoTagInput, "events">) {
+    this.cwd = input.cwd ?? undefined;
+    this.gitBranch = input.gitBranch;
+    this.loops = new LoopScan(input.cwd);
   }
 
-  const tags: AutoTag[] = [];
-  const tag = (t: string, reason: string) => tags.push({ tag: t, reason });
+  /** Add the events from `from` on. */
+  add(events: AutoTagInput["events"], from = 0): this {
+    for (let i = from; i < events.length; i++) {
+      const e = events[i];
+      if (this.lastTs !== undefined) {
+        const gap = e.ts - this.lastTs;
+        if (gap > 0 && (gap <= IDLE_GAP_MS || e.kind === "tool_result")) this.active += gap;
+      }
+      this.lastTs = this.lastTs === undefined ? e.ts : Math.max(this.lastTs, e.ts);
 
-  const byLanguage = new Map<string, number>();
-  for (const file of changed) {
-    const lang = LANGUAGE_BY_EXT.get(path.extname(file).toLowerCase());
-    if (lang) byLanguage.set(lang.tag, (byLanguage.get(lang.tag) ?? 0) + 1);
-  }
-  for (const lang of LANGUAGES) {
-    const n = byLanguage.get(lang.tag) ?? 0;
-    if (n > 0 && (n >= LANGUAGE_MIN_FILES || n / changed.size >= LANGUAGE_MIN_SHARE)) {
-      tag(lang.tag, `changed ${plural(n, `${lang.label} file`)}${n < changed.size ? ` (of ${changed.size} changed)` : ""}`);
+      if (e.kind === "error") {
+        if (!INTERRUPTED.test(e.text ?? "")) this.apiErrors++;
+        continue;
+      }
+      if (e.kind === "tool_result") {
+        this.toolResults++;
+        if (e.isError) this.failures++;
+        continue;
+      }
+      if (e.kind !== "tool_call") continue;
+
+      const name = (e.toolName ?? "").toLowerCase();
+      const args = parseArgs(e.toolInput);
+      const ops = fileOps(e.toolName, e.toolInput, this.cwd);
+      for (const op of ops) {
+        if (isWrite(op.op)) {
+          this.changed.add(op.to ?? op.path);
+          if (op.op === "move") this.moves++;
+        } else this.lookups++;
+      }
+      if (SEARCH_TOOLS.has(name) && !ops.length) this.lookups++;
+      const target = args?.path ?? args?.url;
+      if (WEB_TOOLS.has(name) || (name === "read" && typeof target === "string" && /^https?:\/\//.test(target))) this.web++;
+      if (SUBAGENT_TOOLS.has(name)) this.subagents += Array.isArray(args?.tasks) ? args.tasks.length : 1;
+
+      const commandLine = isShellTool(name) ? shellCommand(args) : undefined;
+      if (!commandLine) continue;
+      for (const w of commands(commandLine)) {
+        const t = testRun(w);
+        if (t) this.tests.add(t);
+        const b = buildRun(w);
+        if (b) this.builds.add(b);
+        const d = depsRun(w);
+        if (d) this.deps.add(d);
+        const g = gitRun(w);
+        if (g) this.git.add(g);
+        if (w[0] === "git" && positionals(w)[0] === "mv") this.moves++;
+        if (READ_COMMANDS.has(w[0]) || (w[0] === "sed" && w.includes("-n"))) this.lookups++;
+      }
     }
+    this.loops.add(events, from);
+    return this;
   }
 
-  if (tests.total) tag("tests", `ran tests ${plural(tests.total, "time")}: ${tests}`);
-  if (builds.total) tag("build", `ran ${plural(builds.total, "build")}: ${builds}`);
-  if (deps.total) tag("deps", `changed dependencies: ${deps}`);
-  if (git.total) tag("git", git.toString());
-  if (web) tag("web", `${plural(web, "web search or fetch", "web searches and fetches")}`);
-  const refactorBranch = input.gitBranch && /^refactor(\/|-|$)/i.test(input.gitBranch);
-  if (moves >= REFACTOR_MIN_MOVES || refactorBranch) {
-    tag("refactor", moves >= REFACTOR_MIN_MOVES ? `moved or renamed ${plural(moves, "file")}` : `on branch ${input.gitBranch}`);
-  }
-  if (subagents) tag("subagents", `spawned ${plural(subagents, "subagent")}`);
+  /** Every automatic tag the events so far make up, sorted by tag. */
+  tags(): AutoTag[] {
+    const tags: AutoTag[] = [];
+    const tag = (t: string, reason: string) => tags.push({ tag: t, reason });
 
-  const failing = failures >= ERROR_MIN_FAILURES && failures / toolResults >= ERROR_MIN_RATE;
-  if (failing || apiErrors) {
-    const parts = [failing && `${failures} of ${plural(toolResults, "tool call")} failed`, apiErrors && plural(apiErrors, "API error")].filter(Boolean);
-    tag("errors", parts.join("; "));
-  }
-  if (active > LONG_ACTIVE_MS) tag("long", `${hoursMinutes(active)} of activity`);
-  if (!changed.size && lookups + web >= RESEARCH_MIN_LOOKUPS) tag("research", `${lookups + web} reads, searches and fetches; no file changed`);
-  const loops = detectLoops(input.events, cwd);
-  if (loops.length) tag("loop", loopReason(loops, cwd));
+    const byLanguage = new Map<string, number>();
+    for (const file of this.changed) {
+      const lang = LANGUAGE_BY_EXT.get(path.extname(file).toLowerCase());
+      if (lang) byLanguage.set(lang.tag, (byLanguage.get(lang.tag) ?? 0) + 1);
+    }
+    for (const lang of LANGUAGES) {
+      const n = byLanguage.get(lang.tag) ?? 0;
+      if (n > 0 && (n >= LANGUAGE_MIN_FILES || n / this.changed.size >= LANGUAGE_MIN_SHARE)) {
+        tag(lang.tag, `changed ${plural(n, `${lang.label} file`)}${n < this.changed.size ? ` (of ${this.changed.size} changed)` : ""}`);
+      }
+    }
 
-  return tags.sort((a, b) => (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0));
+    if (this.tests.total) tag("tests", `ran tests ${plural(this.tests.total, "time")}: ${this.tests}`);
+    if (this.builds.total) tag("build", `ran ${plural(this.builds.total, "build")}: ${this.builds}`);
+    if (this.deps.total) tag("deps", `changed dependencies: ${this.deps}`);
+    if (this.git.total) tag("git", this.git.toString());
+    if (this.web) tag("web", `${plural(this.web, "web search or fetch", "web searches and fetches")}`);
+    const refactorBranch = this.gitBranch && /^refactor(\/|-|$)/i.test(this.gitBranch);
+    if (this.moves >= REFACTOR_MIN_MOVES || refactorBranch) {
+      tag("refactor", this.moves >= REFACTOR_MIN_MOVES ? `moved or renamed ${plural(this.moves, "file")}` : `on branch ${this.gitBranch}`);
+    }
+    if (this.subagents) tag("subagents", `spawned ${plural(this.subagents, "subagent")}`);
+
+    const failing = this.failures >= ERROR_MIN_FAILURES && this.failures / this.toolResults >= ERROR_MIN_RATE;
+    if (failing || this.apiErrors) {
+      const parts = [failing && `${this.failures} of ${plural(this.toolResults, "tool call")} failed`, this.apiErrors && plural(this.apiErrors, "API error")].filter(Boolean);
+      tag("errors", parts.join("; "));
+    }
+    if (this.active > LONG_ACTIVE_MS) tag("long", `${hoursMinutes(this.active)} of activity`);
+    if (!this.changed.size && this.lookups + this.web >= RESEARCH_MIN_LOOKUPS) {
+      tag("research", `${this.lookups + this.web} reads, searches and fetches; no file changed`);
+    }
+    const loops = this.loops.loops();
+    if (loops.length) tag("loop", loopReason(loops, this.cwd));
+
+    return tags.sort((a, b) => (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0));
+  }
 }
+
+/** Every automatic tag that applies, sorted by tag. */
+export const deriveAutoTags = (input: AutoTagInput): AutoTag[] => new AutoTagScan(input).add(input.events).tags();
 
 /** Names of the automatic tags that apply, sorted and unique. */
 export const autoTags = (input: AutoTagInput): string[] => deriveAutoTags(input).map((t) => t.tag);

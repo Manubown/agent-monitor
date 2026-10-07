@@ -22,7 +22,8 @@ const fmt = new Intl.NumberFormat("en-US");
 const usd = (n: number | null) => (n === null ? "—" : `$${n.toFixed(2)}`);
 
 const report = (r: SyncResult) => {
-  console.log(`scanned ${r.scanned} files, parsed ${r.parsed}, ${r.sessions} sessions updated in ${r.durationMs} ms`);
+  const appended = r.appended ? ` (${r.appended} from their new bytes alone)` : "";
+  console.log(`scanned ${r.scanned} files, parsed ${r.parsed}${appended}, ${r.sessions} sessions updated in ${r.durationMs} ms`);
   for (const e of r.errors) console.error(`  error: ${e.path}: ${e.error}`);
   if (r.indexError) console.error(`  search index not updated (rebuilt on a later sync): ${r.indexError}`);
 };

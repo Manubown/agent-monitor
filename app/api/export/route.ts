@@ -88,7 +88,7 @@ const VIEWS: Record<string, View<unknown>> = {
 
 const FORMATS = { csv: "text/csv; charset=utf-8", json: "application/json; charset=utf-8" } as const;
 
-/** GET /api/export?view=sessions|daily|models|projects&format=csv|json plus the page filters (range, source, project, q, tag) and, for sessions, sort; view=gource: see gource.ts. */
+/** GET /api/export?view=sessions|daily|models|projects&format=csv|json plus the page filters (range or from/to, source, project, q, tag) and, for sessions, sort; view=gource: see gource.ts. */
 export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const params = paramsOf(url.searchParams);
@@ -111,7 +111,7 @@ export async function GET(request: Request): Promise<Response> {
     [
       "agent-monitor",
       name,
-      f.range,
+      f.days ? [f.days.from, f.days.to].filter(Boolean).join("-to-") : f.range,
       f.source,
       f.cwd && (f.cwd.split(/[\\/]/).filter(Boolean).pop() ?? "project"),
       f.tag && `tag-${f.tag}`,

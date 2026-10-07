@@ -2,9 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { parseClaudeCode } from "../src/adapters/claude-code";
-import { parseCodex } from "../src/adapters/codex";
-import type { Env } from "../src/core/adapter";
+import { claudeCodeAdapter } from "../src/adapters/claude-code";
+import { codexAdapter } from "../src/adapters/codex";
+import { type Env, parseLog } from "../src/core/adapter";
 import { DEFAULT_PRICES } from "../src/core/pricing";
 import { syncAll } from "../src/ingest/sync";
 import { type Db, openDb } from "../src/store/db";
@@ -119,7 +119,7 @@ describe("usage copied across log files is counted once", () => {
   });
 
   it("parses a Claude Code fork with request ids, dated from its first own line", () => {
-    const fork = parseClaudeCode("/p/fork.jsonl", jsonl(FORK))!;
+    const fork = parseLog(claudeCodeAdapter, "/p/fork.jsonl", jsonl(FORK))!;
     expect(fork.nativeId).toBe("fork");
     expect(fork.usage.map((u) => u.requestId)).toEqual(["msg_1:req_1", "msg_2:req_2", "msg_3:req_3"]);
     expect(fork.startedAt).toBe(Date.parse("2026-10-02T11:00:00.000Z"));
@@ -163,6 +163,32 @@ describe("usage copied across log files is counted once", () => {
     expect(requests(ctx.db, "claude-code:fork")).toBe(2);
   });
 
+  it("hands the copies back when the fork's first own line dates it later than the original", async () => {
+    // A fork synced before it has a line of its own starts where the original does, so the lower id keeps the copies.
+    put(ctx, "claude/-work-p/orig.jsonl", ORIGINAL);
+    put(ctx, "claude/-work-p/fork.jsonl", FORK.slice(0, ORIGINAL.length));
+    await sync();
+    expect(requests(ctx.db, "claude-code:fork")).toBe(2);
+    expect(requests(ctx.db, "claude-code:orig")).toBe(0);
+
+    // Its own first turn moves its start past the original's.
+    fs.appendFileSync(path.join(ctx.root, "claude/-work-p/fork.jsonl"), jsonl(FORK.slice(ORIGINAL.length)));
+    await sync();
+    expect(requests(ctx.db, "claude-code:fork")).toBe(3);
+
+    // The next write of the original takes its requests back, as a sync into a fresh database hands them out.
+    fs.appendFileSync(path.join(ctx.root, "claude/-work-p/orig.jsonl"), jsonl(reply("orig", "msg_6", "req_6", "2026-10-02T10:05:00.000Z", 1, 1)));
+    await sync();
+    expect(requests(ctx.db, "claude-code:orig")).toBe(3);
+    expect(requests(ctx.db, "claude-code:fork")).toBe(1);
+    expect(overview(ctx.db, {})).toMatchObject({ requests: 4 });
+
+    const fresh = openDb(":memory:");
+    await sync(fresh);
+    expect(getSession(fresh, "claude-code:orig")?.session).toEqual(getSession(ctx.db, "claude-code:orig")?.session);
+    expect(getSession(fresh, "claude-code:fork")?.session).toEqual(getSession(ctx.db, "claude-code:fork")?.session);
+  });
+
   it("counts an unmarked resume copy once, whatever the file order", async () => {
     put(ctx, "claude/-work-p/resumed.jsonl", RESUMED);
     await sync();
@@ -180,10 +206,10 @@ describe("usage copied across log files is counted once", () => {
   });
 
   it("ignores the parent's session_meta a Codex fork replays", () => {
-    const child = parseCodex("/r/rollout-child.jsonl", jsonl(CHILD))!;
+    const child = parseLog(codexAdapter, "/r/rollout-child.jsonl", jsonl(CHILD))!;
     expect(child.nativeId).toBe(CHILD_ID);
     expect(child.startedAt).toBe(Date.parse("2026-10-01T13:00:00.000Z"));
-    const parent = parseCodex("/r/rollout-parent.jsonl", jsonl(PARENT))!;
+    const parent = parseLog(codexAdapter, "/r/rollout-parent.jsonl", jsonl(PARENT))!;
     // The replayed token_count lines carry the same ids as the parent's.
     expect(child.usage.slice(0, 2).map((u) => u.requestId)).toEqual(parent.usage.map((u) => u.requestId));
     expect(new Set(child.usage.map((u) => u.requestId)).size).toBe(3);

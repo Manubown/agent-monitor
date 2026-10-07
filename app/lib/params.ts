@@ -3,6 +3,8 @@
  * directly. A parameter is whatever Next.js hands a page: missing, one string, or an array when the key repeats.
  */
 
+import { isDay } from "../../src/core/day";
+
 export type Param = string | string[] | undefined;
 export type Params = Record<string, Param>;
 
@@ -44,6 +46,15 @@ export function oneOf<K extends string>(table: Readonly<Record<K, unknown>>, v: 
 export function oneOfList<T extends string>(values: readonly T[], v: Param): T | undefined {
   const s = first(v);
   return s !== undefined && (values as readonly string[]).includes(s) ? (s as T) : undefined;
+}
+
+/**
+ * A local calendar day written as YYYY-MM-DD (`?day=`, `?from=`, `?to=`). Anything else (another shape, `2026-13-01`,
+ * `2026-02-30`, a timestamp) is undefined, so only days the UI itself writes are accepted.
+ */
+export function dayParam(v: Param): string | undefined {
+  const s = first(v);
+  return isDay(s) ? s : undefined;
 }
 
 /** Lowercase words joined by `-`, at most `max` characters: a readable piece of a file name. */

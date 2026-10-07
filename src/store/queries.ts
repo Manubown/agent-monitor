@@ -9,6 +9,8 @@ import { SUBTREE } from "./tree";
 export interface Filters {
   /** Epoch ms lower bound (inclusive). */
   from?: number;
+  /** Epoch ms upper bound (exclusive); with `from` it makes a custom window such as one local day. */
+  to?: number;
   source?: string;
   /** Exact working directory. */
   cwd?: string;
@@ -26,13 +28,44 @@ export interface TokenTotals {
   reasoning: number;
 }
 
+/**
+ * Sessions with an event or a model request inside `[from, to)`: what "active on this day" means for the day panel
+ * and for a custom window. A tree's `ended_at` alone cannot say it, because a session that started before the window
+ * and ended after it may have done nothing inside.
+ */
+function activityWindow(from: number | undefined, to: number): { sql: string; params: number[] } {
+  const bounds = from === undefined ? "ts < ?" : "ts >= ? AND ts < ?";
+  const args = from === undefined ? [to] : [from, to];
+  return {
+    sql: `SELECT session_id FROM events WHERE ${bounds} UNION SELECT session_id FROM usage WHERE ${bounds}`,
+    params: [...args, ...args],
+  };
+}
+
+/**
+ * The time column of queries that scope whole sessions ("active in the range"). Its lower bound is the session's last
+ * activity, but an upper bound has to ask for activity inside the window: `ended_at < to` would drop every session
+ * that is still running, and would disagree with `listSessions` and the day panel.
+ */
+export const SESSION_ACTIVE = "s.ended_at";
+
 /** WHERE clause over the `sessions` alias `s`; `tsColumn` is the time column to bound (null: leave time to the caller). */
 export function where(f: Filters, tsColumn: string | null): { sql: string; params: SQLInputValue[] } {
   const clauses: string[] = [];
   const params: SQLInputValue[] = [];
-  if (tsColumn && f.from !== undefined) {
-    clauses.push(`${tsColumn} >= ?`);
-    params.push(f.from);
+  if (tsColumn === SESSION_ACTIVE && f.to !== undefined) {
+    const window = activityWindow(f.from, f.to);
+    clauses.push(`s.id IN (${window.sql})`);
+    params.push(...window.params);
+  } else {
+    if (tsColumn && f.from !== undefined) {
+      clauses.push(`${tsColumn} >= ?`);
+      params.push(f.from);
+    }
+    if (tsColumn && f.to !== undefined) {
+      clauses.push(`${tsColumn} < ?`);
+      params.push(f.to);
+    }
   }
   if (f.source) {
     clauses.push("s.source = ?");
@@ -80,8 +113,8 @@ export interface Overview extends TokenTotals {
 }
 
 export function overview(db: Db, f: Filters): Overview {
-  // A session counts when it was active in the range, not only when it started there.
-  const ws = where(f, "s.ended_at");
+  // A session counts when it was active in the range, not only when it started there (and not only when it ended in it).
+  const ws = where(f, SESSION_ACTIVE);
   const sessions = db
     .prepare(
       `SELECT COALESCE(SUM(s.parent_id IS NULL), 0) AS sessions, COALESCE(SUM(s.parent_id IS NOT NULL), 0) AS subagents,
@@ -302,7 +335,7 @@ export interface SessionSummary extends SessionRow {
  * Every session id with the id of its top-level ancestor. Only sessions below a root are reached; sync stores no parent
  * cycles (writeSession breaks them), so that is every session.
  */
-const TREE = `
+export const TREE = `
   WITH RECURSIVE tree(root, id) AS (
     SELECT id, id FROM sessions WHERE parent_id IS NULL OR parent_id NOT IN (SELECT id FROM sessions)
     UNION ALL
@@ -361,14 +394,17 @@ export function listSessions(
   sort: SessionSort = "recent",
 ): { rows: SessionSummary[]; total: number } {
   const w = where(f, null);
-  const having = f.from !== undefined ? "HAVING MAX(x.ended_at) >= ?" : "";
-  const params = f.from !== undefined ? [...w.params, f.from] : w.params;
+  // An open-ended range only needs the tree's last activity; a bounded one asks for activity inside the window.
+  const window = f.to === undefined ? null : activityWindow(f.from, f.to);
+  const cte = window ? `${TREE}, active(id) AS (${window.sql})` : TREE;
+  const having = window ? "HAVING MAX(x.id IN (SELECT id FROM active)) = 1" : f.from !== undefined ? "HAVING MAX(x.ended_at) >= ?" : "";
+  const params = [...(window?.params ?? []), ...w.params, ...(!window && f.from !== undefined ? [f.from] : [])];
   const grouped = `FROM tree JOIN sessions s ON s.id = tree.root JOIN sessions x ON x.id = tree.id ${w.sql} GROUP BY s.id ${having}`;
   const order = `${sort === "recent" ? "" : `${SORT_KEY[sort]} DESC, `}MAX(x.ended_at) DESC, s.id`;
   const rows = db
-    .prepare(`${TREE} SELECT ${SESSION_COLUMNS}, ${ROLLUP} ${grouped} ORDER BY ${order} LIMIT ? OFFSET ?`)
+    .prepare(`${cte} SELECT ${SESSION_COLUMNS}, ${ROLLUP} ${grouped} ORDER BY ${order} LIMIT ? OFFSET ?`)
     .all(...params, page.limit, page.offset) as Record<string, unknown>[];
-  const { total } = db.prepare(`${TREE} SELECT COUNT(*) AS total FROM (SELECT s.id ${grouped})`).get(...params) as { total: number };
+  const { total } = db.prepare(`${cte} SELECT COUNT(*) AS total FROM (SELECT s.id ${grouped})`).get(...params) as { total: number };
   return { rows: rows.map(toSummary), total };
 }
 

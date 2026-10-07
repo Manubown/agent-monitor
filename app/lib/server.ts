@@ -1,9 +1,10 @@
+import { dayEnd, dayStart } from "../../src/core/day";
 import { syncAll, type SyncResult } from "../../src/ingest/sync";
 import { openSearchIndex, type SearchIndex } from "../../src/search/native";
 import { type Db, defaultDbPath, openDb, siblingPath } from "../../src/store/db";
 import type { Filters } from "../../src/store/queries";
 import { changeSummary, type SyncEvent, type SyncHealth } from "./live";
-import { first } from "./params";
+import { dayParam, first } from "./params";
 
 export type { SyncEvent, SyncHealth } from "./live";
 
@@ -190,14 +191,40 @@ export const RANGES = [
 
 export const DEFAULT_RANGE = "30d";
 
-export function filtersFrom(params: SearchParams): Filters & { range: string } {
+/** A page's filters: the time scope is `range`, or the custom local days in `days` when the URL carries them. */
+export interface PageFilters extends Filters {
+  range: string;
+  /** Custom `from`/`to` days as written in the URL, both inclusive; present when either one is valid. */
+  days?: { from?: string; to?: string };
+}
+
+/**
+ * The filters of a page from its query. `from`/`to` are local calendar days (inclusive, `to` ends at the next
+ * midnight) and replace the range window entirely; `to` before `from` is ignored, as is any day that is not a real
+ * date, so a hand-edited URL falls back to the range.
+ */
+export function filtersFrom(params: SearchParams): PageFilters {
   const range = RANGES.find((r) => r.id === first(params.range)) ?? RANGES.find((r) => r.id === DEFAULT_RANGE)!;
+  const fromDay = dayParam(params.from);
+  const toDay = dayParam(params.to);
+  const ordered = fromDay === undefined || toDay === undefined || toDay >= fromDay;
+  const days = ordered && (fromDay !== undefined || toDay !== undefined) ? { from: fromDay, to: toDay } : undefined;
   return {
     range: range.id,
-    from: range.ms ? Date.now() - range.ms : undefined,
+    ...(days ? { days } : {}),
+    from: days ? (days.from === undefined ? undefined : dayStart(days.from)) : range.ms ? Date.now() - range.ms : undefined,
+    to: days?.to === undefined ? undefined : dayEnd(days.to),
     source: first(params.source),
     cwd: first(params.project),
     q: first(params.q),
     tag: first(params.tag),
   };
+}
+
+/**
+ * The page's filters as URL parameters again, the inverse of `filtersFrom`: what every link below the filter bar has
+ * to carry so the next page shows the same scope. Pages add their own keys (`sort`, `page`) to it.
+ */
+export function queryOf(f: PageFilters): Record<string, string | undefined> {
+  return { range: f.range, source: f.source, project: f.cwd, q: f.q, tag: f.tag, from: f.days?.from, to: f.days?.to };
 }

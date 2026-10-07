@@ -55,28 +55,6 @@ interface Call {
   failed?: boolean;
 }
 
-/** Tool calls in order, each with the outcome of its result: paired by call id, else the latest open call (of the same tool, when the result names it). */
-function pairCalls(events: readonly LoopEvent[]): Call[] {
-  const calls: Call[] = [];
-  const byId = new Map<string, Call>();
-  const open: Call[] = [];
-  events.forEach((e, i) => {
-    if (e.kind === "tool_call") {
-      const c: Call = { seq: e.seq ?? i, ts: e.ts, tool: e.toolName ?? "", input: e.toolInput ?? undefined };
-      calls.push(c);
-      open.push(c);
-      if (e.toolCallId) byId.set(e.toolCallId, c);
-    } else if (e.kind === "tool_result") {
-      const c = (e.toolCallId ? byId.get(e.toolCallId) : undefined) ?? open.findLast((x) => !e.toolName || x.tool === e.toolName);
-      if (!c || c.failed !== undefined) return;
-      c.failed = e.isError === true;
-      const at = open.indexOf(c);
-      if (at >= 0) open.splice(at, 1);
-    }
-  });
-  return calls;
-}
-
 const parseArgs = (input: string | undefined): Record<string, unknown> | undefined => {
   if (!input) return undefined;
   try {
@@ -151,33 +129,129 @@ const span = (kind: LoopKind, subject: string, calls: Call[], failures: number):
   seqs: calls.map((c) => c.seq),
 });
 
-/** Retry loops of one session (one agent), ordered by where they start. `cwd` resolves relative file paths. */
-export function detectLoops(events: readonly LoopEvent[], cwd?: string | null): Loop[] {
-  const calls = pairCalls(events);
-  const loops: Loop[] = [];
+/** Edits of one file; `mark` is the failure count right after its latest edit was issued. */
+interface FileEdits {
+  edits: Call[];
+  cycles: number;
+  mark: number;
+}
 
-  // Edits per file; `mark` is the failure count right after the file's latest edit was issued.
-  const files = new Map<string, { edits: Call[]; cycles: number; mark: number }>();
-  // Failure streaks per command or identical call.
-  const streaks = new Map<string, { kind: LoopKind; subject: string; failed: Call[] }>();
-  const flush = (key: string) => {
-    const s = streaks.get(key);
-    if (!s) return;
-    streaks.delete(key);
+/** A failure streak of one command or identical call. */
+interface Streak {
+  kind: LoopKind;
+  subject: string;
+  failed: Call[];
+}
+
+/**
+ * Running loop detection for one session, so a growing log only pays for its new events: events are added in order
+ * and never taken back, and `loops()` may be called after any number of them.
+ *
+ * A call is processed once its result arrived, because the result decides what the call means for the loops around
+ * it. The calls still waiting are processed speculatively in `loops()` and rolled back again afterwards, which is
+ * what reading the whole log at once does with the calls whose result never came.
+ */
+export class LoopScan {
+  private readonly cwd?: string;
+  private readonly files = new Map<string, FileEdits>();
+  private readonly streaks = new Map<string, Streak>();
+  /** Calls by id, and those still waiting for a result, for pairing results with their call. */
+  private readonly byId = new Map<string, Call>();
+  private readonly open: Call[] = [];
+  /** Calls not processed yet: the first one still waiting for its result, and every call after it. */
+  private queue: Call[] = [];
+  /** Loops of streaks that ended. */
+  private readonly done: Loop[] = [];
+  private failures = 0;
+  /** While `loops()` works through the queue, how to undo that again. */
+  private undo: (() => void)[] | null = null;
+
+  constructor(cwd?: string | null) {
+    this.cwd = cwd ?? undefined;
+  }
+
+  /** Add the events from `from` on, in timeline order; an event's index is its sequence number unless it carries one. */
+  add(events: readonly LoopEvent[], from = 0): this {
+    for (let i = from; i < events.length; i++) {
+      const e = events[i];
+      if (e.kind === "tool_call") {
+        const c: Call = { seq: e.seq ?? i, ts: e.ts, tool: e.toolName ?? "", input: e.toolInput ?? undefined };
+        this.queue.push(c);
+        this.open.push(c);
+        if (e.toolCallId) this.byId.set(e.toolCallId, c);
+      } else if (e.kind === "tool_result") {
+        const c = (e.toolCallId ? this.byId.get(e.toolCallId) : undefined) ?? this.open.findLast((x) => !e.toolName || x.tool === e.toolName);
+        if (!c || c.failed !== undefined) continue;
+        c.failed = e.isError === true;
+        const at = this.open.indexOf(c);
+        if (at >= 0) this.open.splice(at, 1);
+      }
+    }
+    let settled = 0;
+    while (settled < this.queue.length && this.queue[settled].failed !== undefined) this.process(this.queue[settled++]);
+    if (settled) this.queue = this.queue.slice(settled);
+    return this;
+  }
+
+  /** Every loop the events so far make up, ordered by where it starts. */
+  loops(): Loop[] {
+    const undo: (() => void)[] = [];
+    this.undo = undo;
+    try {
+      for (const c of this.queue) this.process(c);
+      const loops = [...this.done];
+      for (const s of this.streaks.values()) {
+        const loop = this.spanOf(s);
+        if (loop) loops.push(loop);
+      }
+      for (const [p, f] of this.files) {
+        if (f.edits.length >= EDIT_LOOP_MIN_EDITS && f.cycles >= EDIT_LOOP_MIN_CYCLES) loops.push(span("edit", p, f.edits, f.cycles));
+      }
+      return loops.sort((a, b) => a.firstSeq - b.firstSeq || a.kind.localeCompare(b.kind) || a.subject.localeCompare(b.subject));
+    } finally {
+      for (let i = undo.length - 1; i >= 0; i--) undo[i]();
+      this.undo = null;
+    }
+  }
+
+  /** The loop a streak makes up, if it is long enough to be one. */
+  private spanOf(s: Streak): Loop | undefined {
     const min = s.kind === "command" ? COMMAND_LOOP_MIN_FAILURES : CALL_LOOP_MIN_FAILURES;
-    if (s.failed.length >= min) loops.push(span(s.kind, s.subject, s.failed, s.failed.length));
-  };
-  let failures = 0;
+    return s.failed.length >= min ? span(s.kind, s.subject, s.failed, s.failed.length) : undefined;
+  }
 
-  for (const c of calls) {
-    const ops = fileOps(c.tool, c.input, cwd ?? undefined);
+  private flush(key: string): void {
+    const s = this.streaks.get(key);
+    if (!s) return;
+    this.streaks.delete(key);
+    this.undo?.push(() => this.streaks.set(key, s));
+    const loop = this.spanOf(s);
+    if (loop) {
+      this.done.push(loop);
+      this.undo?.push(() => void this.done.pop());
+    }
+  }
+
+  private process(c: Call): void {
+    const undo = this.undo;
+    const ops = fileOps(c.tool, c.input, this.cwd);
     const changed = new Set(ops.filter((o) => o.op === "edit" || o.op === "write").map((o) => o.path));
     for (const p of changed) {
-      let f = files.get(p);
-      if (!f) files.set(p, (f = { edits: [], cycles: 0, mark: failures }));
-      else if (failures > f.mark) f.cycles++;
+      const f = this.files.get(p);
+      if (!f) {
+        this.files.set(p, { edits: [c], cycles: 0, mark: this.failures });
+        undo?.push(() => void this.files.delete(p));
+        continue;
+      }
+      const { cycles, mark } = f;
+      undo?.push(() => {
+        f.edits.pop();
+        f.cycles = cycles;
+        f.mark = mark;
+      });
+      if (this.failures > f.mark) f.cycles++;
       f.edits.push(c);
-      f.mark = failures;
+      f.mark = this.failures;
     }
 
     const name = c.tool.toLowerCase();
@@ -188,25 +262,35 @@ export function detectLoops(events: readonly LoopEvent[], cwd?: string | null): 
       if (script?.trim()) {
         const command = normalizeCommand(script);
         key = `command\0${command}`;
-        if (!streaks.has(key)) streaks.set(key, { kind: "command", subject: command, failed: [] });
+        this.streak(key, { kind: "command", subject: command, failed: [] });
       }
     } else if (c.tool) {
       key = `call\0${c.tool}\0${c.input ?? ""}`;
-      if (!streaks.has(key)) streaks.set(key, { kind: "call", subject: callSubject(c.tool, c.input), failed: [] });
+      this.streak(key, { kind: "call", subject: callSubject(c.tool, c.input), failed: [] });
     }
     if (key) {
-      if (c.failed) streaks.get(key)?.failed.push(c);
-      else if (c.failed === false) flush(key);
+      if (c.failed) {
+        const s = this.streaks.get(key) as Streak;
+        s.failed.push(c);
+        undo?.push(() => void s.failed.pop());
+      } else if (c.failed === false) this.flush(key);
     }
-    if (c.failed) failures++;
+    if (c.failed) {
+      this.failures++;
+      undo?.push(() => void this.failures--);
+    }
   }
 
-  for (const key of [...streaks.keys()]) flush(key);
-  for (const [p, f] of files) {
-    if (f.edits.length >= EDIT_LOOP_MIN_EDITS && f.cycles >= EDIT_LOOP_MIN_CYCLES) loops.push(span("edit", p, f.edits, f.cycles));
+  /** Start a streak for `key` unless one is running. */
+  private streak(key: string, fresh: Streak): void {
+    if (this.streaks.has(key)) return;
+    this.streaks.set(key, fresh);
+    this.undo?.push(() => void this.streaks.delete(key));
   }
-  return loops.sort((a, b) => a.firstSeq - b.firstSeq || a.kind.localeCompare(b.kind) || a.subject.localeCompare(b.subject));
 }
+
+/** Retry loops of one session (one agent), ordered by where they start. `cwd` resolves relative file paths. */
+export const detectLoops = (events: readonly LoopEvent[], cwd?: string | null): Loop[] => new LoopScan(cwd).add(events).loops();
 
 const REASON_SUBJECT_MAX = 60;
 const REASON_MAX_LOOPS = 3;

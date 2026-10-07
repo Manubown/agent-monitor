@@ -23,7 +23,7 @@ export async function gourceExport(url: URL, open: () => Promise<Db>): Promise<R
   } else if (project) {
     const f = filtersFrom(params);
     touches = projectGource(await open(), project, f);
-    name = [project.split(/[\\/]/).filter(Boolean).pop() ?? "project", f.range, f.source];
+    name = [project.split(/[\\/]/).filter(Boolean).pop() ?? "project", f.days ? [f.days.from, f.days.to].filter(Boolean).join("-to-") : f.range, f.source];
   } else {
     return new Response("Gource export needs session=<id> or project=<working directory>.", { status: 400 });
   }

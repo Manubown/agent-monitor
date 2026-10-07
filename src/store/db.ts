@@ -124,6 +124,14 @@ CREATE TABLE IF NOT EXISTS user.tags (
   PRIMARY KEY (session_id, tag)
 );
 CREATE INDEX IF NOT EXISTS user.tags_tag ON tags(tag);
+
+-- Dashboard layouts: one row per layout, so several named ones ("cost", "activity") can follow without a migration.
+-- 'default' is the one the overview uses; no row at all means the default layout from the widget registry.
+CREATE TABLE IF NOT EXISTS user.dashboard_layout (
+  name       TEXT PRIMARY KEY,
+  layout     TEXT NOT NULL,                    -- JSON [{ id, w, h }], normalized against the registry before it is written
+  updated_at INTEGER NOT NULL
+);
 `;
 
 /** $XDG_DATA_HOME/agent-monitor: database, user data, search index and raw-log archive. */
