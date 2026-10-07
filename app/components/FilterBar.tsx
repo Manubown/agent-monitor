@@ -19,7 +19,8 @@ interface Props {
   search?: boolean;
 }
 
-/** One row of filters above the content; every chart and table below reads the same URL params. */
+/** The filters every chart and table on a page reads from the same URL params: a row above the content, or on the
+ * overview the side panel at the window's edge, which stacks it (`SidePanel`). */
 export function FilterBar({ ranges, sources, projects, current, search }: Props) {
   const router = useRouter();
   const pathname = usePathname();

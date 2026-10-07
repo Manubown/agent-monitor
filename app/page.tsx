@@ -5,6 +5,7 @@ import { loadLayout } from "../src/store/dashboard";
 import { type ActiveSession, activeSessions, eventTimeline, filterOptions } from "../src/store/queries";
 import { linkTo, widgetContext } from "./components/dashboard/context";
 import { Dashboard, DashboardBar } from "./components/dashboard/Dashboard";
+import { SidePanel } from "./components/dashboard/SidePanel";
 import { WIDGET_SPECS } from "./components/dashboard/specs";
 import { FilterBar } from "./components/FilterBar";
 import { NoActivity } from "./components/NoActivity";
@@ -32,9 +33,10 @@ function lastEventLabel(e: ActiveSession["lastEvent"], now: number): string {
 }
 
 /**
- * The overview is a dashboard: the band, "Active now" (live and unfiltered) and the filter bar are fixed, everything
- * below them is the stored widget layout (`src/core/dashboard.ts`, `app/components/dashboard/`). The page itself
- * runs only the queries those fixed parts need; each widget runs its own, so a hidden widget costs nothing.
+ * The overview is a dashboard: the band and "Active now" (live and unfiltered) are fixed, everything below them is the
+ * stored widget layout (`src/core/dashboard.ts`, `app/components/dashboard/`). The filters and the "Customize" toggle
+ * sit in the side panel at the window's edge, so nothing but data stands above the grid. The page itself runs only the
+ * queries those fixed parts need; each widget runs its own, so a hidden widget costs nothing.
  */
 export default async function OverviewPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const params = await searchParams;
@@ -56,6 +58,8 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
   const ctx = widgetContext({ db, filters: f, now, until, rangeLabel, day: dayParam(params.day) ?? null, query: current, customize, layout });
   // The band needs the totals anyway; the summary and token-mix widgets share this one read.
   const o = ctx.overview();
+  const empty = o.requests === 0 && o.sessions === 0;
+  const activeFilters = [f.source, f.cwd, f.tag, f.q, f.days].filter(Boolean).length;
 
   return (
     <>
@@ -106,29 +110,36 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
           </div>
         </section>
       )}
-      <FilterBar
-        ranges={RANGES.map((r) => ({ value: r.id, label: r.label }))}
-        sources={options.sources.map((s) => ({ value: s, label: sourceLabel(s) }))}
-        projects={options.projects.map((p) => ({ value: p, label: project(p) }))}
-        // The customize mode is part of the page's state, so changing a filter stays in it.
-        current={{ ...current, customize: customize ? "1" : undefined }}
-        // Only shown when a search is already applied, so it can be seen and cleared.
-        search={Boolean(f.q)}
-      />
+      <SidePanel
+        active={activeFilters}
+        customize={customize}
+        // With nothing to show there is no dashboard to arrange, but a page left in customize mode can still leave it.
+        customizeHref={empty && !customize ? undefined : ctx.href({ customize: customize ? undefined : "1" })}
+      >
+        <FilterBar
+          ranges={RANGES.map((r) => ({ value: r.id, label: r.label }))}
+          sources={options.sources.map((s) => ({ value: s, label: sourceLabel(s) }))}
+          projects={options.projects.map((p) => ({ value: p, label: project(p) }))}
+          // The customize mode is part of the page's state, so changing a filter stays in it.
+          current={{ ...current, customize: customize ? "1" : undefined }}
+          // Only shown when a search is already applied, so it can be seen and cleared.
+          search={Boolean(f.q)}
+        />
+      </SidePanel>
 
-      {o.requests === 0 && o.sessions === 0 ? (
+      {empty ? (
         <NoActivity
           db={db}
           subject="agent activity"
           range={f.days ? "custom" : f.range}
-          filtered={Boolean(f.source || f.cwd || f.tag || f.q || f.days)}
+          filtered={activeFilters > 0}
           query={f.q}
           allTimeHref={linkTo("/", { ...current, range: "all", from: undefined, to: undefined })}
           clearHref={linkTo("/", { range: "all" })}
         />
       ) : (
         <>
-          <DashboardBar ctx={ctx} layout={layout} customize={customize} />
+          {customize && <DashboardBar ctx={ctx} layout={layout} />}
           <Dashboard ctx={ctx} layout={layout} customize={customize} />
         </>
       )}

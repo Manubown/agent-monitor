@@ -22,7 +22,13 @@ export function Dashboard({ ctx, layout, customize }: { ctx: WidgetContext; layo
   const dayAfter = ctx.day === null ? -1 : layout.reduce((last, slot, i) => (DAY_CHART_IDS.some((id) => id === slot.id) ? i : last), -1);
 
   if (layout.length === 0) {
-    return <Empty>Every widget is hidden. Customize the dashboard to add one back.</Empty>;
+    return (
+      <Empty>
+        {customize
+          ? "Every widget is hidden. Add one back from the bar above."
+          : "Every widget is hidden. Open Filters at the right edge of the window and choose “Customize layout” to add one back."}
+      </Empty>
+    );
   }
 
   return (
@@ -59,23 +65,19 @@ export function Dashboard({ ctx, layout, customize }: { ctx: WidgetContext; layo
   );
 }
 
-/** The dashboard's own controls, between the filter bar and the grid: the customize toggle, and in that mode the
- * hidden widgets and the way back to the default layout. */
-export function DashboardBar({ ctx, layout, customize }: { ctx: WidgetContext; layout: readonly Slot[]; customize: boolean }) {
+/** The bar between the band and the grid in customize mode: the way out, the hidden widgets and the way back to the
+ * default layout. Outside that mode there is no bar; "Customize layout" is in the side panel (`SidePanel`). */
+export function DashboardBar({ ctx, layout }: { ctx: WidgetContext; layout: readonly Slot[] }) {
   const hidden = hiddenWidgets(layout, WIDGET_SPECS);
   const changed = JSON.stringify(layout) !== JSON.stringify(defaultLayout(WIDGET_SPECS));
 
   return (
     <div className="dash-bar">
-      <Link id="dash-done" className="btn" href={ctx.href({ customize: customize ? undefined : "1" })} scroll={false}>
-        {customize ? "Done" : "Customize"}
+      <Link id="dash-done" className="btn" href={ctx.href({ customize: undefined })} scroll={false}>
+        Done
       </Link>
-      {customize && (
-        <>
-          <AddWidget options={hidden.map((w) => ({ id: w.id, title: w.title, note: w.note }))} />
-          <ResetLayout changed={changed} />
-        </>
-      )}
+      <AddWidget options={hidden.map((w) => ({ id: w.id, title: w.title, note: w.note }))} />
+      <ResetLayout changed={changed} />
     </div>
   );
 }

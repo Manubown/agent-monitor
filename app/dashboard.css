@@ -124,3 +124,182 @@
 :root[data-motion="on"] .dash-ctl {
   transition: background-color 120ms steps(2);
 }
+
+/* ---------- side panel ----------
+ * The overview's filters and "Customize" toggle live in a drawer at the right edge instead of rows above the grid.
+ * The tab sits in the page gutter, centred vertically; while the drawer is open it rides on the drawer's left edge, so
+ * it stays visible and closes it again. Closed, the drawer is `visibility: hidden`: out of the tab order and the
+ * accessibility tree, not just off screen.
+ */
+
+.side-tab,
+.side-panel {
+  --side-w: min(340px, calc(100vw - 40px));
+}
+
+.side-tab {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  z-index: 15;
+  transform: translateY(-50%);
+  writing-mode: vertical-rl;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 5px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink-2);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-right: 0;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.side-tab:hover,
+.side-tab[aria-expanded="true"] {
+  color: var(--ink);
+  /* --hover is translucent; the tab floats over content, so it is laid on the opaque surface. */
+  background: linear-gradient(var(--hover), var(--hover)) var(--surface-raised);
+}
+
+.side-tab[aria-expanded="true"] {
+  right: var(--side-w);
+}
+
+/* Active filters mark the tab's outer edge in the accent, like the current page in the nav. */
+.side-tab[data-active] {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.side-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.side-tab-count {
+  writing-mode: horizontal-tb;
+  min-width: 18px;
+  padding: 1px 4px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--page);
+  background: var(--ink);
+}
+
+.side-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  width: var(--side-w);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  background: var(--surface);
+  border-left: 1px solid var(--frame);
+  visibility: hidden;
+  transform: translateX(100%);
+}
+
+.side-panel[data-open] {
+  visibility: visible;
+  transform: none;
+}
+
+/* Focus lands on the panel itself when it opens, so a screen reader announces it; the controls show their own ring. */
+.side-panel:focus {
+  outline: none;
+}
+
+.side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.side-close {
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  padding: 4px 9px;
+  color: var(--ink-muted);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.side-close:hover {
+  color: var(--ink);
+  background: var(--hover);
+}
+
+.side-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* The filter bar, stacked: the ranges become a 3-column grid of keys, the menus take the full width. */
+.side-panel .filters {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.side-panel .segmented {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.side-panel .segmented a {
+  text-align: center;
+}
+
+.side-panel .select,
+.side-panel .search {
+  max-width: none;
+  min-width: 0;
+}
+
+.side-panel .filter-chip {
+  align-self: flex-start;
+}
+
+.side-section {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.side-section p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.side-section .btn {
+  text-decoration: none;
+}
+
+/* Opening shows the drawer at once (focus moves into it right away); closing hides it once it has slid out. */
+:root[data-motion="on"] .side-panel {
+  transition:
+    transform 160ms steps(4),
+    visibility 0s 160ms;
+}
+
+:root[data-motion="on"] .side-panel[data-open] {
+  transition: transform 160ms steps(4);
+}
+
+:root[data-motion="on"] .side-tab {
+  transition: right 160ms steps(4);
+}
