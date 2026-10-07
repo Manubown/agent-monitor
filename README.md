@@ -14,7 +14,7 @@ A local dashboard for omp, Claude Code and Codex sessions: cost, timelines, suba
 </div>
 
 > [!WARNING]
-> **Alpha (`0.1.0-alpha.2`).** It works daily on real logs, but the UI, CLI and database schema will change. The database is a cache rebuilt from your logs, so upgrades are cheap; your tags are kept. [Feedback and bug reports](#feedback) shape what comes next.
+> **Alpha (`0.1.0-alpha.4`).** It works daily on real logs, but the UI, CLI and database schema will change. The database is a cache rebuilt from your logs, so upgrades are cheap; your tags are kept. [Feedback and bug reports](#feedback) shape what comes next.
 
 All screenshots come from the bundled synthetic demo dataset (`pnpm demo`). None of it is real session data.
 
@@ -121,7 +121,7 @@ Press `Ctrl K` / `⌘K` or `/` to search every prompt, reply, tool call and resu
 
 ![Activity heatmap: calendar and hour-of-day grid](docs/screenshots/heatmap.png)
 
-- **Overview**: active sessions; the latest sessions as cards; cost, tokens, requests, tool calls and cache hit rate; cost and tokens per day by tool, where clicking a day lists what the agents did that day; an **activity heatmap** (calendar plus weekday × hour, by events, cost or sessions); models; projects. Every number follows one filter row, and "Customize" arranges, resizes and hides the cards.
+- **Overview**: active sessions; the latest sessions as cards; cost, tokens, requests, tool calls and cache hit rate; cost and tokens per day by tool, where clicking a day lists what the agents did that day; an **activity heatmap** (calendar plus weekday × hour, by events, cost or sessions); models; projects. Every number follows the same filters, kept in a side panel behind the "Filters" tab on the right edge, where "Customize layout" also arranges, resizes and hides the cards.
 - **Automatic tags** computed locally from what a session did, with the reason as a tooltip: languages, `tests`, `build`, `deps`, `git`, `web`, `subagents`, `refactor`, `errors`, `long`, `research`, `loop`. Add your own `#tags` too.
 - **Usage windows**: Claude requests grouped into the 5-hour windows that subscription limits reset on, with burn rate and a projection.
 - **Accurate usage**: requests copied into forked or resumed sessions (Claude Code `/branch`, Codex forks) are counted once.
